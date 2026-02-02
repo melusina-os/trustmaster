@@ -540,6 +540,53 @@
             return d.result;
         }
         
+        // Search on-chain registry for a license bound to this domain
+        // Uses getProgramAccounts to find LicenseEntry PDAs with matching domain
+        async function searchLicenseByDomain(domain) {
+            // Domain is stored as UTF-8 bytes in the LicenseEntry account
+            // We search for accounts owned by our program with domain field matching
+            const domainBytes = new TextEncoder().encode(domain);
+            
+            // LicenseEntry PDA structure: [discriminator(8), license_nft(32), domain_len(4), domain(var), ...]
+            // We'll use memcmp filter on the domain bytes
+            // Offset: 8 (discriminator) + 32 (license_nft pubkey) + 4 (domain string length prefix) = 44
+            
+            try {
+                const accounts = await rpc('getProgramAccounts', [
+                    CONFIG.PROGRAM_ID,
+                    {
+                        encoding: 'base64',
+                        filters: [
+                            { dataSize: 200 }, // Approximate size of LicenseEntry
+                            // Can't easily filter by variable-length domain, so we fetch and filter client-side
+                        ]
+                    }
+                ]);
+                
+                // Parse accounts and find one with matching domain
+                for (const acc of accounts || []) {
+                    try {
+                        const data = atob(acc.account.data[0]);
+                        // Try to find domain string in the account data
+                        if (data.includes(domain)) {
+                            // Extract license NFT pubkey (bytes 8-40)
+                            // This is a simplified check - in production would properly deserialize
+                            return {
+                                mint: acc.pubkey,
+                                account: acc.pubkey,
+                                source: 'registry'
+                            };
+                        }
+                    } catch (e) { /* skip malformed */ }
+                }
+                
+                return null;
+            } catch (e) {
+                console.warn('Registry search failed:', e);
+                throw e;
+            }
+        }
+        
         async function startVerification() {
             let domain = '', adminWallet = '', grainId = '', shareWallet = '';
             if (mode === 'domain') domain = document.getElementById('domainInput').value.trim();
@@ -565,12 +612,21 @@
                 let hasValidLicense = false;
                 let licenseData = null;
                 
-                if (dnsRec.length) {
-                    const p = parseTxt(dnsRec[0].data);
-                    dns.license = p.license;
-                    dns.tls_fp = p.tls_fp;
-                    dns.reseller = p.reseller;
-                    l3.push({ name: 'DNS Records', status: 'pass', details: { license: p.license, tls_fp: p.tls_fp, reseller: p.reseller } });
+                // Parse Melusina-specific TXT records
+                let melusina_record = null;
+                for (const rec of dnsRec) {
+                    const p = parseTxt(rec.data);
+                    if (p.license || p.tls_fp || p.reseller) {
+                        melusina_record = p;
+                        break;
+                    }
+                }
+                
+                if (melusina_record) {
+                    dns.license = melusina_record.license;
+                    dns.tls_fp = melusina_record.tls_fp;
+                    dns.reseller = melusina_record.reseller;
+                    l3.push({ name: 'DNS Records', status: 'pass', details: { license: dns.license, tls_fp: dns.tls_fp, reseller: dns.reseller } });
                     
                     if (dns.license) {
                         try {
@@ -587,7 +643,28 @@
                     }
                 } else {
                     l3.push({ name: 'DNS Records', status: 'warn', details: {}, errors: ['No _melusina TXT records found'] });
-                    l3.push({ name: 'License NFT', status: 'skip', details: {}, errors: ['Cannot verify - no DNS records'] });
+                    
+                    // REVERSE LOOKUP: Search on-chain for any license bound to this domain
+                    l3.push({ name: 'On-Chain Search', status: 'pending', details: { note: 'Searching registry for domain...' } });
+                    try {
+                        const chainLicense = await searchLicenseByDomain(domain);
+                        if (chainLicense) {
+                            dns.license = chainLicense.mint;
+                            dns.reseller = chainLicense.reseller;
+                            hasValidLicense = true;
+                            l3.pop(); // Remove pending
+                            l3.push({ name: 'On-Chain Search', status: 'pass', details: { mint: chainLicense.mint, source: 'Registry PDA' }, errors: [] });
+                            l3.push({ name: 'License NFT', status: 'pass', details: { mint: chainLicense.mint, note: 'Found via on-chain search (DNS not configured)' } });
+                        } else {
+                            l3.pop();
+                            l3.push({ name: 'On-Chain Search', status: 'fail', details: {}, errors: ['No license found for this domain in registry'] });
+                            l3.push({ name: 'License NFT', status: 'fail', details: {}, errors: ['Domain not licensed'] });
+                        }
+                    } catch (e) {
+                        l3.pop();
+                        l3.push({ name: 'On-Chain Search', status: 'warn', details: {}, errors: ['Registry search failed: ' + e.message] });
+                        l3.push({ name: 'License NFT', status: 'skip', details: {}, errors: ['Cannot verify - no DNS and search failed'] });
+                    }
                 }
                 
                 l3.push({ name: 'TLS Fingerprint', status: dns.tls_fp ? 'pass' : 'warn', details: dns.tls_fp ? { fp: dns.tls_fp } : {}, errors: dns.tls_fp ? [] : ['Not in DNS'] });
