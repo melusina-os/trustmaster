@@ -2,9 +2,19 @@
 
 🧬 **Blockchain-powered trust verification for Melusina OS deployments**
 
+[![Deploy to GitHub Pages](https://github.com/melusina-os/trustmaster/actions/workflows/deploy-pages.yml/badge.svg)](https://github.com/melusina-os/trustmaster/actions/workflows/deploy-pages.yml)
+
 ## Live Verification Tool
 
 **[➡️ Launch Verifier](https://melusina-os.github.io/trustmaster/verify/)**
+
+## Deployment
+
+This repository uses a two-branch model:
+- **`main`** - Source code and development
+- **`gh-pages`** - Auto-deployed static site (via GitHub Actions)
+
+Any push to `main` automatically deploys to `gh-pages` and updates the live site.
 
 ## What It Does
 
