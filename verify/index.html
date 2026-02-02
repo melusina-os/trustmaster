@@ -227,6 +227,7 @@
         .check-card.pass { border-color: var(--success); background: linear-gradient(135deg, white, #f0fdf4); }
         .check-card.warn { border-color: var(--warning); background: linear-gradient(135deg, white, #fffbeb); }
         .check-card.fail { border-color: var(--danger); background: linear-gradient(135deg, white, #fef2f2); }
+        .check-card.skip { border-color: var(--muted); background: linear-gradient(135deg, white, #f3f4f6); }
         
         .check-header {
             display: flex;
@@ -247,6 +248,7 @@
         .check-card.pass .check-icon { background: var(--success-light); color: var(--success); }
         .check-card.warn .check-icon { background: var(--warning-light); color: var(--warning); }
         .check-card.fail .check-icon { background: var(--danger-light); color: var(--danger); }
+        .check-card.skip .check-icon { background: #f3f4f6; color: var(--muted); }
         
         .check-title { font-weight: 600; }
         
@@ -262,6 +264,7 @@
         .check-card.pass .check-status { background: var(--success-light); color: var(--success); }
         .check-card.warn .check-status { background: var(--warning-light); color: var(--warning); }
         .check-card.fail .check-status { background: var(--danger-light); color: var(--danger); }
+        .check-card.skip .check-status { background: #f3f4f6; color: var(--muted); }
         
         .check-details { font-size: 0.85rem; color: var(--muted); }
         .check-details code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.8rem; }
@@ -556,36 +559,35 @@
             try {
                 setStatus('pending', 'Verifying...', 'Checking all layers');
                 
-                // L1
-                const l1 = [{ name: 'Master NFT', status: 'pass', details: { mint: CONFIG.MASTER_NFT } }];
-                l1.push({ name: 'Keyholders (3-of-5)', status: 'pass', details: { threshold: '3-of-5' } });
-                results.layers.foundation = l1;
-                render('layer1Checks', l1);
-                
-                // L2
-                const l2 = [{ name: 'Reseller NFT', status: 'pass', details: { note: 'Verified via license chain' } }];
-                results.layers.reseller = l2;
-                render('layer2Checks', l2);
-                
-                // L3
+                // L3 first - we need license info to verify L1/L2
                 const l3 = [];
                 const dnsRec = await queryDNS(`_melusina.${domain}`);
+                let hasValidLicense = false;
+                let licenseData = null;
+                
                 if (dnsRec.length) {
                     const p = parseTxt(dnsRec[0].data);
                     dns.license = p.license;
                     dns.tls_fp = p.tls_fp;
-                    l3.push({ name: 'DNS Records', status: 'pass', details: { license: p.license, tls_fp: p.tls_fp } });
+                    dns.reseller = p.reseller;
+                    l3.push({ name: 'DNS Records', status: 'pass', details: { license: p.license, tls_fp: p.tls_fp, reseller: p.reseller } });
+                    
+                    if (dns.license) {
+                        try {
+                            const ta = await rpc('getTokenLargestAccounts', [dns.license]);
+                            if (ta?.value?.[0]?.amount !== '0') {
+                                hasValidLicense = true;
+                                l3.push({ name: 'License NFT', status: 'pass', details: { mint: dns.license } });
+                            } else {
+                                l3.push({ name: 'License NFT', status: 'fail', details: { mint: dns.license }, errors: ['NFT has zero supply'] });
+                            }
+                        } catch (e) { l3.push({ name: 'License NFT', status: 'warn', details: {}, errors: [e.message] }); }
+                    } else {
+                        l3.push({ name: 'License NFT', status: 'fail', details: {}, errors: ['No license mint in DNS'] });
+                    }
                 } else {
-                    l3.push({ name: 'DNS Records', status: 'warn', details: {}, errors: ['No records found'] });
-                }
-                
-                if (dns.license) {
-                    try {
-                        const ta = await rpc('getTokenLargestAccounts', [dns.license]);
-                        l3.push({ name: 'License NFT', status: (ta?.value?.[0]?.amount !== '0') ? 'pass' : 'fail', details: { mint: dns.license } });
-                    } catch (e) { l3.push({ name: 'License NFT', status: 'warn', details: {}, errors: [e.message] }); }
-                } else {
-                    l3.push({ name: 'License NFT', status: 'fail', details: {}, errors: ['No license in DNS'] });
+                    l3.push({ name: 'DNS Records', status: 'warn', details: {}, errors: ['No _melusina TXT records found'] });
+                    l3.push({ name: 'License NFT', status: 'skip', details: {}, errors: ['Cannot verify - no DNS records'] });
                 }
                 
                 l3.push({ name: 'TLS Fingerprint', status: dns.tls_fp ? 'pass' : 'warn', details: dns.tls_fp ? { fp: dns.tls_fp } : {}, errors: dns.tls_fp ? [] : ['Not in DNS'] });
@@ -596,6 +598,43 @@
                 
                 results.layers.licensee = l3;
                 render('layer3Checks', l3);
+                
+                // L1 - Actually verify Master NFT exists on-chain
+                const l1 = [];
+                try {
+                    const masterInfo = await rpc('getTokenLargestAccounts', [CONFIG.MASTER_NFT]);
+                    if (masterInfo?.value?.[0]?.amount !== '0') {
+                        l1.push({ name: 'Master NFT', status: 'pass', details: { mint: CONFIG.MASTER_NFT } });
+                    } else {
+                        l1.push({ name: 'Master NFT', status: 'fail', details: { mint: CONFIG.MASTER_NFT }, errors: ['NFT not found or zero supply'] });
+                    }
+                } catch (e) {
+                    l1.push({ name: 'Master NFT', status: 'warn', details: { mint: CONFIG.MASTER_NFT }, errors: [e.message] });
+                }
+                l1.push({ name: 'Keyholders (3-of-5)', status: hasValidLicense ? 'pass' : 'skip', details: { threshold: '3-of-5' }, errors: hasValidLicense ? [] : ['Requires valid license to verify chain'] });
+                results.layers.foundation = l1;
+                render('layer1Checks', l1);
+                
+                // L2 - Only verify if we have a valid license chain
+                const l2 = [];
+                if (hasValidLicense && dns.reseller) {
+                    try {
+                        const resellerInfo = await rpc('getTokenLargestAccounts', [dns.reseller]);
+                        if (resellerInfo?.value?.[0]?.amount !== '0') {
+                            l2.push({ name: 'Reseller NFT', status: 'pass', details: { mint: dns.reseller } });
+                        } else {
+                            l2.push({ name: 'Reseller NFT', status: 'fail', details: { mint: dns.reseller }, errors: ['Reseller NFT not found'] });
+                        }
+                    } catch (e) {
+                        l2.push({ name: 'Reseller NFT', status: 'warn', details: {}, errors: [e.message] });
+                    }
+                } else if (hasValidLicense) {
+                    l2.push({ name: 'Reseller NFT', status: 'skip', details: {}, errors: ['No reseller in DNS - may be direct Foundation license'] });
+                } else {
+                    l2.push({ name: 'Reseller NFT', status: 'skip', details: {}, errors: ['Cannot verify - no valid license'] });
+                }
+                results.layers.reseller = l2;
+                render('layer2Checks', l2);
                 
                 // L4
                 if (mode === 'share') {
@@ -613,11 +652,13 @@
                 const pass = all.filter(c => c.status === 'pass').length;
                 const warn = all.filter(c => c.status === 'warn').length;
                 const fail = all.filter(c => c.status === 'fail').length;
-                results.summary = { pass, warn, fail, total: all.length };
+                const skip = all.filter(c => c.status === 'skip').length;
+                results.summary = { pass, warn, fail, skip, total: all.length };
                 
-                if (fail === 0 && warn === 0) setStatus('success', 'All Passed', `${pass}/${all.length} checks passed`);
-                else if (fail === 0) setStatus('partial', 'Warnings', `${pass} passed, ${warn} warnings`);
-                else setStatus('error', 'Failed', `${fail} failed`);
+                if (fail === 0 && warn === 0 && skip === 0) setStatus('success', 'All Passed', `${pass}/${all.length} checks passed`);
+                else if (fail === 0 && warn === 0) setStatus('partial', 'Incomplete', `${pass} passed, ${skip} skipped (no license chain)`);
+                else if (fail === 0) setStatus('partial', 'Warnings', `${pass} passed, ${warn} warnings, ${skip} skipped`);
+                else setStatus('error', 'Failed', `${fail} failed, ${skip} skipped`);
                 
                 renderProvenance(dns);
                 document.getElementById('exportJSON').textContent = JSON.stringify(results, null, 2);
@@ -634,23 +675,25 @@
         function render(id, checks) {
             const c = document.getElementById(id);
             c.innerHTML = checks.map(ch => {
-                const icon = ch.status === 'pass' ? '✓' : ch.status === 'warn' ? '⚠' : '✗';
-                const st = ch.status === 'pass' ? 'Verified' : ch.status === 'warn' ? 'Warning' : 'Failed';
+                const icon = ch.status === 'pass' ? '✓' : ch.status === 'warn' ? '⚠' : ch.status === 'skip' ? '–' : '✗';
+                const st = ch.status === 'pass' ? 'Verified' : ch.status === 'warn' ? 'Warning' : ch.status === 'skip' ? 'Skipped' : 'Failed';
                 let det = '';
                 if (ch.details) Object.entries(ch.details).forEach(([k, v]) => { if (v && k !== 'note') det += `<div class="detail-row"><span class="detail-label">${k}:</span> <code>${String(v).substring(0,40)}</code></div>`; });
                 if (ch.details?.note) det += `<div style="font-style:italic;font-size:0.8em;margin-top:4px;">${ch.details.note}</div>`;
-                if (ch.errors?.length) det += `<div style="color:var(--danger);font-size:0.8em;margin-top:4px;">${ch.errors.join(', ')}</div>`;
+                if (ch.errors?.length) det += `<div style="color:${ch.status === 'skip' ? 'var(--muted)' : 'var(--danger)'};font-size:0.8em;margin-top:4px;">${ch.errors.join(', ')}</div>`;
                 return `<div class="check-card ${ch.status}"><div class="check-header"><div class="check-icon">${icon}</div><div class="check-title">${ch.name}</div><span class="check-status">${st}</span></div><div class="check-details">${det || 'OK'}</div></div>`;
             }).join('');
         }
         
         function renderProvenance(dns) {
+            const hasLicense = dns.license ? true : false;
+            const hasReseller = dns.reseller ? true : false;
             document.getElementById('provenanceChain').innerHTML = `
                 <div class="provenance-step step-foundation"><div class="step-icon">🏛️</div><div><strong>Foundation</strong><br><code style="font-size:0.75rem;">${CONFIG.MASTER_NFT}</code></div></div>
-                <div class="provenance-arrow">↓</div>
-                <div class="provenance-step step-reseller"><div class="step-icon">🏪</div><div><strong>Reseller</strong><br><small>Via license chain</small></div></div>
-                <div class="provenance-arrow">↓</div>
-                <div class="provenance-step step-license"><div class="step-icon">📜</div><div><strong>License</strong><br><code style="font-size:0.75rem;">${dns.license || 'From DNS'}</code><br><small>${results.domain}</small></div></div>
+                <div class="provenance-arrow">${hasReseller ? '↓' : '?'}</div>
+                <div class="provenance-step step-reseller" style="${hasReseller ? '' : 'opacity:0.5'}"><div class="step-icon">🏪</div><div><strong>Reseller</strong><br><small>${hasReseller ? dns.reseller.substring(0,20) + '...' : 'Not in chain'}</small></div></div>
+                <div class="provenance-arrow">${hasLicense ? '↓' : '?'}</div>
+                <div class="provenance-step step-license" style="${hasLicense ? '' : 'opacity:0.5'}"><div class="step-icon">📜</div><div><strong>License</strong><br><code style="font-size:0.75rem;">${dns.license || 'Not found'}</code><br><small>${results.domain}</small></div></div>
                 ${mode === 'share' ? `<div class="provenance-arrow">↓</div><div class="provenance-step step-share"><div class="step-icon">💎</div><div><strong>Share</strong><br><small>Registry verified</small></div></div>` : ''}
             `;
         }
