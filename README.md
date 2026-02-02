@@ -76,17 +76,20 @@ https://melusina-os.github.io/trustmaster/verify/?domain=example.melusina-os.org
 
 ## License
 
-Business Source License 1.1 (BSL 1.1) - This is a standalone public tool for verifying Melusina OS deployments and is not part of Melusina OS itself.
+Server Side Public License (SSPL) v1 with Time-Delayed Conversion - This is a standalone public tool for verifying Melusina OS deployments and is not part of Melusina OS itself.
 
 **Permitted Uses:**
-- Non-production use (development, testing, evaluation)
-- Production use for internal purposes within your organization
-- Integration and customization for non-competitive purposes
+- ✅ Internal use (testing, evaluation, security auditing, compliance)
+- ✅ Production use within your organization
+- ✅ Modifications and derivative works
+- ✅ Redistribution under the same license
 
 **Restricted Uses:**
-- Hosting or embedding the Licensed Work to compete with Melusina Foundation's paid offerings
+- ❌ Offering as a Service (SaaS) without open-sourcing your entire service stack
 
-**Change License:** After 4 years, each version converts to Mozilla Public License 2.0 (MPL 2.0).
+**Change License:** After 3 years, each version automatically converts to GNU Affero General Public License v3.0 (AGPL-3.0).
+
+> **Note:** SSPL is source-available but not OSI-approved open source. After conversion to AGPL, the software becomes true open source.
 
 ## Links
 
