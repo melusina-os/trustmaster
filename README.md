@@ -76,7 +76,7 @@ https://melusina-os.github.io/trustmaster/verify/?domain=example.melusina-os.org
 
 ## License
 
-MIT License - Part of the Melusina OS project.
+GNU Affero General Public License v3.0 (AGPL-3.0) - This is a standalone public tool for verifying Melusina OS deployments and is not part of Melusina OS itself.
 
 ## Links
 
