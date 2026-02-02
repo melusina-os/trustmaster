@@ -76,7 +76,17 @@ https://melusina-os.github.io/trustmaster/verify/?domain=example.melusina-os.org
 
 ## License
 
-GNU Affero General Public License v3.0 (AGPL-3.0) - This is a standalone public tool for verifying Melusina OS deployments and is not part of Melusina OS itself.
+Business Source License 1.1 (BSL 1.1) - This is a standalone public tool for verifying Melusina OS deployments and is not part of Melusina OS itself.
+
+**Permitted Uses:**
+- Non-production use (development, testing, evaluation)
+- Production use for internal purposes within your organization
+- Integration and customization for non-competitive purposes
+
+**Restricted Uses:**
+- Hosting or embedding the Licensed Work to compete with Melusina Foundation's paid offerings
+
+**Change License:** After 4 years, each version converts to Mozilla Public License 2.0 (MPL 2.0).
 
 ## Links
 
