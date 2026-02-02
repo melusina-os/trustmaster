@@ -673,27 +673,42 @@
                     l3.push({ name: 'Admin Designation', status: 'pass', details: { wallet: adminWallet, note: 'On-chain InstallAdmin PDA verified' } });
                 }
                 
-                results.layers.licensee = l3;
+                // Compute L3 layer status
+                const l3_pass = l3.filter(c => c.status === 'pass').length;
+                const l3_fail = l3.filter(c => c.status === 'fail').length;
+                const l3_status = l3_fail > 0 ? 'fail' : (l3_pass === l3.length ? 'pass' : 'partial');
+                const l3_reason = hasValidLicense ? 'License verified on-chain' : 
+                    (l3.find(c => c.name === 'On-Chain Search')?.status === 'fail' ? 'Domain not found in DNS or on-chain registry' : 'License verification incomplete');
+                results.layers.licensee = { checks: l3, status: l3_status, reason: l3_reason, pass: l3_pass, fail: l3_fail, total: l3.length };
                 render('layer3Checks', l3);
                 
                 // L1 - Actually verify Master NFT exists on-chain
                 const l1 = [];
+                let l1_reason = '';
                 try {
                     const masterInfo = await rpc('getTokenLargestAccounts', [CONFIG.MASTER_NFT]);
                     if (masterInfo?.value?.[0]?.amount !== '0') {
                         l1.push({ name: 'Master NFT', status: 'pass', details: { mint: CONFIG.MASTER_NFT } });
                     } else {
                         l1.push({ name: 'Master NFT', status: 'fail', details: { mint: CONFIG.MASTER_NFT }, errors: ['NFT not found or zero supply'] });
+                        l1_reason = 'Master NFT not found on-chain';
                     }
                 } catch (e) {
                     l1.push({ name: 'Master NFT', status: 'warn', details: { mint: CONFIG.MASTER_NFT }, errors: [e.message] });
+                    l1_reason = 'RPC error: ' + e.message;
                 }
-                l1.push({ name: 'Keyholders (3-of-5)', status: hasValidLicense ? 'pass' : 'skip', details: { threshold: '3-of-5' }, errors: hasValidLicense ? [] : ['Requires valid license to verify chain'] });
-                results.layers.foundation = l1;
+                l1.push({ name: 'Keyholders (3-of-5)', status: hasValidLicense ? 'pass' : 'skip', details: { threshold: '3-of-5', note: hasValidLicense ? 'Chain verified' : 'Blocked by L3 failure' }, errors: hasValidLicense ? [] : ['Cannot verify keyholders without valid license chain (L3 must pass)'] });
+                
+                const l1_pass = l1.filter(c => c.status === 'pass').length;
+                const l1_fail = l1.filter(c => c.status === 'fail').length;
+                const l1_status = l1_fail > 0 ? 'fail' : (l1_pass === l1.length ? 'pass' : 'partial');
+                if (!l1_reason) l1_reason = l1_status === 'pass' ? 'Foundation verified' : 'Partial - keyholder check requires valid license';
+                results.layers.foundation = { checks: l1, status: l1_status, reason: l1_reason, pass: l1_pass, fail: l1_fail, total: l1.length };
                 render('layer1Checks', l1);
                 
                 // L2 - Only verify if we have a valid license chain
                 const l2 = [];
+                let l2_reason = '';
                 if (hasValidLicense && dns.reseller) {
                     try {
                         const resellerInfo = await rpc('getTokenLargestAccounts', [dns.reseller]);
@@ -701,16 +716,20 @@
                             l2.push({ name: 'Reseller NFT', status: 'pass', details: { mint: dns.reseller } });
                         } else {
                             l2.push({ name: 'Reseller NFT', status: 'fail', details: { mint: dns.reseller }, errors: ['Reseller NFT not found'] });
+                            l2_reason = 'Reseller NFT specified but not found on-chain';
                         }
                     } catch (e) {
                         l2.push({ name: 'Reseller NFT', status: 'warn', details: {}, errors: [e.message] });
+                        l2_reason = 'RPC error checking reseller: ' + e.message;
                     }
                 } else if (hasValidLicense) {
-                    l2.push({ name: 'Reseller NFT', status: 'skip', details: {}, errors: ['No reseller in DNS - may be direct Foundation license'] });
+                    l2.push({ name: 'Reseller NFT', status: 'skip', details: { note: 'Direct Foundation license (no reseller)' }, errors: ['No reseller specified - this may be a direct Foundation license'] });
+                    l2_reason = 'License exists but no reseller specified in DNS - may be direct Foundation license';
                 } else {
-                    l2.push({ name: 'Reseller NFT', status: 'skip', details: {}, errors: ['Cannot verify - no valid license'] });
+                    l2.push({ name: 'Reseller NFT', status: 'skip', details: { note: 'Blocked by L3 failure' }, errors: ['Cannot verify - L3 (License) must pass first'] });
+                    l2_reason = 'Cannot verify reseller without a valid license (L3 failed)';
                 }
-                results.layers.reseller = l2;
+                results.layers.reseller = { checks: l2, status: l2[0]?.status || 'skip', reason: l2_reason };
                 render('layer2Checks', l2);
                 
                 // L4
@@ -719,23 +738,54 @@
                     const l4 = [];
                     l4.push({ name: 'Grain Registry', status: grainId ? 'pass' : 'warn', details: grainId ? { grainId } : {}, errors: grainId ? [] : ['No grain ID'] });
                     l4.push({ name: 'Share Entry', status: shareWallet ? 'pass' : 'warn', details: shareWallet ? { type: shareWallet.length > 50 ? 'URL Token' : 'Wallet', id: shareWallet } : {} });
-                    results.layers.shares = l4;
+                    const l4_pass = l4.filter(c => c.status === 'pass').length;
+                    const l4_status = l4_pass === l4.length ? 'pass' : 'partial';
+                    results.layers.shares = { checks: l4, status: l4_status, reason: l4_status === 'pass' ? 'Share access verified' : 'Share verification incomplete', pass: l4_pass, total: l4.length };
                     render('layer4Checks', l4);
                 } else {
                     document.getElementById('layer4Card').style.display = 'none';
                 }
                 
-                const all = [...l1, ...l2, ...l3, ...(results.layers.shares || [])];
+                const all = [...l1, ...l2, ...l3, ...(results.layers.shares?.checks || [])];
                 const pass = all.filter(c => c.status === 'pass').length;
                 const warn = all.filter(c => c.status === 'warn').length;
                 const fail = all.filter(c => c.status === 'fail').length;
                 const skip = all.filter(c => c.status === 'skip').length;
-                results.summary = { pass, warn, fail, skip, total: all.length };
                 
-                if (fail === 0 && warn === 0 && skip === 0) setStatus('success', 'All Passed', `${pass}/${all.length} checks passed`);
-                else if (fail === 0 && warn === 0) setStatus('partial', 'Incomplete', `${pass} passed, ${skip} skipped (no license chain)`);
-                else if (fail === 0) setStatus('partial', 'Warnings', `${pass} passed, ${warn} warnings, ${skip} skipped`);
-                else setStatus('error', 'Failed', `${fail} failed, ${skip} skipped`);
+                // Overall result with clear reasoning
+                let overallStatus, overallReason;
+                if (fail === 0 && warn === 0 && skip === 0) {
+                    overallStatus = 'pass';
+                    overallReason = 'Full trust chain verified from Foundation to License';
+                } else if (fail > 0) {
+                    overallStatus = 'fail';
+                    overallReason = results.layers.licensee.status === 'fail' ? 
+                        'License verification failed: ' + results.layers.licensee.reason :
+                        'Verification failed at one or more layers';
+                } else if (skip > 0) {
+                    overallStatus = 'incomplete';
+                    overallReason = 'Cannot verify full chain - L3 (License) must pass first';
+                } else {
+                    overallStatus = 'partial';
+                    overallReason = 'Verification passed with warnings';
+                }
+                
+                results.summary = { 
+                    status: overallStatus,
+                    reason: overallReason,
+                    pass, warn, fail, skip, total: all.length,
+                    layers: {
+                        foundation: results.layers.foundation.status,
+                        reseller: results.layers.reseller.status,
+                        licensee: results.layers.licensee.status,
+                        shares: results.layers.shares?.status || 'n/a'
+                    }
+                };
+                
+                if (overallStatus === 'pass') setStatus('success', 'All Passed', `${pass}/${all.length} checks passed`);
+                else if (overallStatus === 'incomplete') setStatus('partial', 'Incomplete', overallReason);
+                else if (overallStatus === 'partial') setStatus('partial', 'Warnings', `${pass} passed, ${warn} warnings`);
+                else setStatus('error', 'Failed', overallReason);
                 
                 renderProvenance(dns);
                 document.getElementById('exportJSON').textContent = JSON.stringify(results, null, 2);
