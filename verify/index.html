@@ -371,6 +371,7 @@
             
             <div class="tabs">
                 <div class="tab active" data-mode="domain">🔍 Domain</div>
+                <div class="tab" data-mode="paste">📋 Paste DNA Output</div>
                 <div class="tab" data-mode="admin">🔐 Admin Access</div>
                 <div class="tab" data-mode="share">🔗 Share Access</div>
             </div>
@@ -384,6 +385,11 @@
                 <div class="input-group">
                     <input type="text" id="domainInput" placeholder="Enter domain (e.g., test.melusina-os.org)">
                 </div>
+            </div>
+            
+            <div id="pasteMode" class="mode-panel" style="display:none;">
+                <p style="margin-bottom:12px;color:var(--muted);font-size:0.9em;">Paste the verification data from the DNA button (🧬) in your Sandstorm instance. TrustMaster will independently verify all claims.</p>
+                <textarea id="pasteInput" rows="14" style="width:100%;padding:14px;border:2px solid #e5e7eb;border-radius:12px;font-family:'Courier New',monospace;font-size:0.85rem;resize:vertical;" placeholder="=== CONNECTION ===&#10;Protocol: https&#10;Host: test.melusina-os.org&#10;...&#10;&#10;=== SOLANA CHAIN ===&#10;...&#10;&#10;=== DNS RECORDS ===&#10;...&#10;&#10;=== BUILD ===&#10;..."></textarea>
             </div>
             
             <div id="adminMode" class="mode-panel" style="display:none;">
@@ -500,7 +506,8 @@
             t.classList.add('active');
             mode = t.dataset.mode;
             document.querySelectorAll('.mode-panel').forEach(p => p.style.display = 'none');
-            document.getElementById(mode + 'Mode').style.display = 'block';
+            const panel = document.getElementById(mode + 'Mode');
+            if (panel) panel.style.display = 'block';
         }));
         
         document.querySelectorAll('.network-btn').forEach(b => b.addEventListener('click', () => {
@@ -528,6 +535,59 @@
             if (!v) return r;
             v.split(';').forEach(p => { const [k, ...vs] = p.split('='); if (k && vs.length) r[k.trim()] = vs.join('=').trim(); });
             return r;
+        }
+        
+        // Parse DNA button output (=== SECTION === format)
+        function parseDNAOutput(text) {
+            const sections = {};
+            let currentSection = null;
+            const lines = text.split('\n');
+            for (const line of lines) {
+                const sectionMatch = line.match(/^=== (.+?) ===$/);
+                if (sectionMatch) {
+                    currentSection = sectionMatch[1].trim();
+                    sections[currentSection] = {};
+                    continue;
+                }
+                if (currentSection && line.includes(':')) {
+                    const colonIdx = line.indexOf(':');
+                    const key = line.substring(0, colonIdx).trim();
+                    const val = line.substring(colonIdx + 1).trim();
+                    if (key && val) sections[currentSection][key] = val;
+                }
+            }
+            return sections;
+        }
+        
+        // Fetch all Melusina DNS records in parallel
+        async function fetchAllDNS(domain) {
+            const [melusina, release, threshold, auth, tlsa] = await Promise.all([
+                queryDNS(`_melusina.${domain}`),
+                queryDNS(`_melusina-release.${domain}`),
+                queryDNS(`_melusina-threshold.${domain}`),
+                queryDNS(`_melusina-auth.${domain}`),
+                queryDNS(`_443._tcp.${domain}`, 'TLSA')
+            ]);
+            return {
+                melusina: melusina.length ? parseTxt(melusina[0].data) : null,
+                release: release.length ? parseTxt(release[0].data) : null,
+                threshold: threshold.length ? parseTxt(threshold[0].data) : null,
+                auth: auth.length ? auth[0].data : null,
+                tlsa: tlsa.length ? tlsa[0].data : null
+            };
+        }
+        
+        // Fetch /melusina/release-info from host
+        async function fetchReleaseInfo(domain) {
+            try {
+                const r = await fetch(`https://${domain}/melusina/release-info`, { signal: AbortSignal.timeout(5000) });
+                if (r.ok) return await r.json();
+            } catch (e) { /* fallback to http */ }
+            try {
+                const r = await fetch(`http://${domain}/melusina/release-info`, { signal: AbortSignal.timeout(5000) });
+                if (r.ok) return await r.json();
+            } catch (e) { /* not available */ }
+            return null;
         }
         
         async function rpc(method, params = []) {
@@ -589,9 +649,25 @@
         
         async function startVerification() {
             let domain = '', adminWallet = '', grainId = '', shareWallet = '';
-            if (mode === 'domain') domain = document.getElementById('domainInput').value.trim();
-            else if (mode === 'admin') { domain = document.getElementById('adminDomain').value.trim(); adminWallet = document.getElementById('adminWallet').value.trim(); }
-            else { domain = document.getElementById('shareDomain').value.trim(); grainId = document.getElementById('grainId').value.trim(); shareWallet = document.getElementById('shareWallet').value.trim(); }
+            let pastedData = null;
+            
+            if (mode === 'paste') {
+                const raw = document.getElementById('pasteInput').value.trim();
+                if (!raw) return alert('Paste DNA button output first');
+                pastedData = parseDNAOutput(raw);
+                // Extract domain from pasted CONNECTION section
+                domain = pastedData.CONNECTION?.Host || '';
+                if (!domain) return alert('No Host found in pasted data');
+            } else if (mode === 'domain') {
+                domain = document.getElementById('domainInput').value.trim();
+            } else if (mode === 'admin') {
+                domain = document.getElementById('adminDomain').value.trim();
+                adminWallet = document.getElementById('adminWallet').value.trim();
+            } else {
+                domain = document.getElementById('shareDomain').value.trim();
+                grainId = document.getElementById('grainId').value.trim();
+                shareWallet = document.getElementById('shareWallet').value.trim();
+            }
             
             if (!domain) return alert('Enter a domain');
             
@@ -600,33 +676,38 @@
             btn.innerHTML = '<span class="spinner"></span> Verifying...';
             document.getElementById('resultsSection').classList.add('visible');
             
-            results = { domain, network, mode, timestamp: new Date().toISOString(), layers: {} };
+            results = { domain, network, mode, timestamp: new Date().toISOString(), layers: {}, pastedData: pastedData || undefined };
             const dns = {};
             
             try {
                 setStatus('pending', 'Verifying...', 'Checking all layers');
                 
+                // Fetch ALL DNS records in parallel
+                const allDnsP = fetchAllDNS(domain);
+                const releaseInfoP = fetchReleaseInfo(domain);
+                const [allDns, releaseInfo] = await Promise.all([allDnsP, releaseInfoP]);
+                
                 // L3 first - we need license info to verify L1/L2
                 const l3 = [];
-                const dnsRec = await queryDNS(`_melusina.${domain}`);
                 let hasValidLicense = false;
-                let licenseData = null;
                 
-                // Parse Melusina-specific TXT records
-                let melusina_record = null;
-                for (const rec of dnsRec) {
-                    const p = parseTxt(rec.data);
-                    if (p.license || p.tls_fp || p.reseller) {
-                        melusina_record = p;
-                        break;
+                // Parse _melusina TXT record
+                if (allDns.melusina) {
+                    dns.license = allDns.melusina.license;
+                    dns.tls_fp = allDns.melusina.tls_fp;
+                    dns.reseller = allDns.melusina.reseller;
+                    dns.network = allDns.melusina.network;
+                    l3.push({ name: 'DNS _melusina', status: 'pass', details: { license: dns.license, tls_fp: dns.tls_fp ? dns.tls_fp.substring(0,16) + '...' : 'N/A', reseller: dns.reseller || 'none', network: dns.network } });
+                    
+                    // Cross-verify against pasted data if available
+                    if (pastedData?.['DNS RECORDS']?.['_melusina']) {
+                        const pastedMel = parseTxt(pastedData['DNS RECORDS']['_melusina']);
+                        if (pastedMel.license === dns.license) {
+                            l3.push({ name: 'Cross-check: pasted ↔ DNS', status: 'pass', details: { note: 'Pasted license matches live DNS query' } });
+                        } else {
+                            l3.push({ name: 'Cross-check: pasted ↔ DNS', status: 'warn', details: { pasted: pastedMel.license, live: dns.license }, errors: ['Pasted data does not match live DNS!'] });
+                        }
                     }
-                }
-                
-                if (melusina_record) {
-                    dns.license = melusina_record.license;
-                    dns.tls_fp = melusina_record.tls_fp;
-                    dns.reseller = melusina_record.reseller;
-                    l3.push({ name: 'DNS Records', status: 'pass', details: { license: dns.license, tls_fp: dns.tls_fp, reseller: dns.reseller } });
                     
                     if (dns.license) {
                         try {
@@ -642,7 +723,7 @@
                         l3.push({ name: 'License NFT', status: 'fail', details: {}, errors: ['No license mint in DNS'] });
                     }
                 } else {
-                    l3.push({ name: 'DNS Records', status: 'warn', details: {}, errors: ['No _melusina TXT records found'] });
+                    l3.push({ name: 'DNS _melusina', status: 'warn', details: {}, errors: ['No _melusina TXT records found'] });
                     
                     // REVERSE LOOKUP: Search on-chain for any license bound to this domain
                     l3.push({ name: 'On-Chain Search', status: 'pending', details: { note: 'Searching registry for domain...' } });
@@ -652,8 +733,8 @@
                             dns.license = chainLicense.mint;
                             dns.reseller = chainLicense.reseller;
                             hasValidLicense = true;
-                            l3.pop(); // Remove pending
-                            l3.push({ name: 'On-Chain Search', status: 'pass', details: { mint: chainLicense.mint, source: 'Registry PDA' }, errors: [] });
+                            l3.pop();
+                            l3.push({ name: 'On-Chain Search', status: 'pass', details: { mint: chainLicense.mint, source: 'Registry PDA' } });
                             l3.push({ name: 'License NFT', status: 'pass', details: { mint: chainLicense.mint, note: 'Found via on-chain search (DNS not configured)' } });
                         } else {
                             l3.pop();
@@ -667,7 +748,58 @@
                     }
                 }
                 
-                l3.push({ name: 'TLS Fingerprint', status: dns.tls_fp ? 'pass' : 'warn', details: dns.tls_fp ? { fp: dns.tls_fp } : {}, errors: dns.tls_fp ? [] : ['Not in DNS'] });
+                // TLS Fingerprint
+                l3.push({ name: 'TLS Fingerprint', status: dns.tls_fp ? 'pass' : 'warn', details: dns.tls_fp ? { fp: dns.tls_fp.substring(0, 24) + '...' } : {}, errors: dns.tls_fp ? [] : ['Not in DNS'] });
+                
+                // _melusina-release check
+                if (allDns.release) {
+                    const relDetails = { sha256: allDns.release.sha256?.substring(0, 20) + '...', version: allDns.release.version, network: allDns.release.network };
+                    l3.push({ name: 'DNS _melusina-release', status: 'pass', details: relDetails });
+                    
+                    // Cross-check with /melusina/release-info endpoint
+                    if (releaseInfo && releaseInfo.bundle_hash) {
+                        const match = allDns.release.sha256 === releaseInfo.bundle_hash;
+                        l3.push({ name: 'Release hash: DNS ↔ endpoint', status: match ? 'pass' : 'warn', details: { dns_hash: allDns.release.sha256?.substring(0, 16) + '...', endpoint_hash: releaseInfo.bundle_hash.substring(0, 16) + '...' }, errors: match ? [] : ['DNS release hash differs from /melusina/release-info'] });
+                    }
+                } else {
+                    l3.push({ name: 'DNS _melusina-release', status: 'warn', details: {}, errors: ['No _melusina-release TXT record'] });
+                }
+                
+                // _melusina-threshold check
+                if (allDns.threshold) {
+                    const thrDetails = { m: allDns.threshold.m, n: allDns.threshold.n, formula: allDns.threshold.formula };
+                    if (allDns.threshold.keys) thrDetails.keys = allDns.threshold.keys.substring(0, 30) + '...';
+                    l3.push({ name: 'DNS _melusina-threshold', status: 'pass', details: thrDetails });
+                } else {
+                    l3.push({ name: 'DNS _melusina-threshold', status: 'warn', details: {}, errors: ['No _melusina-threshold TXT record'] });
+                }
+                
+                // _melusina-auth check
+                if (allDns.auth) {
+                    l3.push({ name: 'DNS _melusina-auth', status: 'pass', details: { data: allDns.auth.substring(0, 40) + (allDns.auth.length > 40 ? '...' : '') } });
+                } else {
+                    l3.push({ name: 'DNS _melusina-auth', status: 'warn', details: {}, errors: ['No _melusina-auth TXT record'] });
+                }
+                
+                // DANE TLSA check
+                if (allDns.tlsa) {
+                    l3.push({ name: 'DANE TLSA (_443._tcp)', status: 'pass', details: { record: allDns.tlsa.substring(0, 40) + '...' } });
+                } else {
+                    l3.push({ name: 'DANE TLSA (_443._tcp)', status: 'warn', details: {}, errors: ['No DANE TLSA record - certificate not pinned in DNS'] });
+                }
+                
+                // BUILD section (release-info endpoint)
+                if (releaseInfo) {
+                    l3.push({ name: 'Build Info (/melusina/release-info)', status: 'pass', details: { version: releaseInfo.version, chain: releaseInfo.chain, network: releaseInfo.network, program: releaseInfo.program_id?.substring(0, 12) + '...' } });
+                    
+                    // Cross-check pasted BUILD data if available
+                    if (pastedData?.BUILD?.Version && releaseInfo.version) {
+                        const match = pastedData.BUILD.Version === releaseInfo.version;
+                        l3.push({ name: 'Cross-check: pasted BUILD ↔ endpoint', status: match ? 'pass' : 'warn', details: { pasted: pastedData.BUILD.Version, live: releaseInfo.version }, errors: match ? [] : ['Pasted version differs from live endpoint'] });
+                    }
+                } else {
+                    l3.push({ name: 'Build Info (/melusina/release-info)', status: 'warn', details: {}, errors: ['Endpoint not available'] });
+                }
                 
                 if (mode === 'admin' && adminWallet) {
                     l3.push({ name: 'Admin Designation', status: 'pass', details: { wallet: adminWallet, note: 'On-chain InstallAdmin PDA verified' } });
@@ -697,7 +829,7 @@
                     l1.push({ name: 'Master NFT', status: 'warn', details: { mint: CONFIG.MASTER_NFT }, errors: [e.message] });
                     l1_reason = 'RPC error: ' + e.message;
                 }
-                l1.push({ name: 'Keyholders (3-of-5)', status: hasValidLicense ? 'pass' : 'skip', details: { threshold: '3-of-5', note: hasValidLicense ? 'Chain verified' : 'Blocked by L3 failure' }, errors: hasValidLicense ? [] : ['Cannot verify keyholders without valid license chain (L3 must pass)'] });
+                l1.push({ name: 'Keyholders', status: hasValidLicense ? (allDns.threshold ? 'pass' : 'warn') : 'skip', details: allDns.threshold ? { threshold: `${allDns.threshold.m}-of-${allDns.threshold.n}`, keys: allDns.threshold.keys ? 'Published in DNS' : 'Not in DNS', note: hasValidLicense ? 'Chain verified' : 'Blocked by L3 failure' } : { note: hasValidLicense ? 'No threshold DNS record' : 'Blocked by L3 failure' }, errors: hasValidLicense ? (allDns.threshold ? [] : ['No _melusina-threshold DNS record']) : ['Cannot verify keyholders without valid license chain (L3 must pass)'] });
                 
                 const l1_pass = l1.filter(c => c.status === 'pass').length;
                 const l1_fail = l1.filter(c => c.status === 'fail').length;
