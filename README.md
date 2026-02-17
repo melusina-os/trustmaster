@@ -104,7 +104,58 @@ Admin designations are **soulbound** (non-transferable) and can be recalled inst
 
 ## License
 
-MIT License - Part of the Melusina OS project.
+**Melusina TrustMaster License** - Three-Phase Time-Delayed License with AI Protection
+
+This is a standalone public tool for verifying Melusina OS deployments and is not part of Melusina OS itself.
+
+### License Phases
+
+| Phase | License | Duration | Status |
+|-------|---------|----------|--------|
+| **1** | Business Source License 1.1 | Years 0-3 | 🔒 Current |
+| **2** | Server Side Public License v1 | Years 3-5 | ⏳ Pending |
+| **3** | GNU AGPL v3.0 | After Year 5 | ⏳ Pending |
+
+### Permitted Uses (All Phases)
+
+- ✅ Internal use (testing, evaluation, security auditing, compliance)
+- ✅ Production use within your organization
+- ✅ Modifications and derivative works
+- ✅ Redistribution under the same license
+
+### Restricted Uses
+
+| Restriction | Phase 1 (BSL) | Phase 2 (SSPL) | Phase 3 (AGPL) |
+|-------------|---------------|----------------|----------------|
+| Competitive SaaS/hosted offerings | ❌ | ❌* | ✅ |
+| SaaS without open-sourcing service stack | N/A | ❌ | ✅ (code only) |
+| AI reverse engineering of code | ❌ | ❌ | ✅ |
+
+*Phase 2 (SSPL) requires open-sourcing entire service stack if offering as SaaS
+
+### ⚠️ AI Protection Clause (Phases 1 & 2 Only)
+
+**STRICT PROHIBITION** on using AI/ML to reverse engineer, analyze, or derive insights from this codebase.
+
+**Violation Damages (Joint & Several Liability):**
+- 💰 **$1,000,000 USD** one-time payment
+- 📊 **25% of annual turnover** perpetually
+
+Liable parties: The person performing analysis + AI system developer/operator
+
+> This clause expires when software enters Phase 3 (AGPL).
+
+### Timeline
+
+```
+Feb 2024                Feb 2027                Feb 2029
+    │                       │                       │
+    ▼                       ▼                       ▼
+┌───────────────────┬───────────────────┬───────────────────────────▶
+│   PHASE 1: BSL    │  PHASE 2: SSPL    │    PHASE 3: AGPL-3.0
+│   + AI Protection │  + AI Protection  │    (Full Open Source)
+└───────────────────┴───────────────────┴───────────────────────────▶
+```
 
 ## Links
 
