@@ -329,6 +329,14 @@ const C = {
     RPC: { devnet: 'https://api.devnet.solana.com', 'mainnet-beta': 'https://api.mainnet-beta.solana.com' },
     PROGRAM_ID: '8bVLhPF9suNrB3Tj5q9Ps6uyonhWxeTUpXTyDRwitnR9',
     MASTER_NFT: 'CnnETKyqcTLG1GTKibYjEv7vdXxPnwWAzLZTA81E5FRN',
+    // CORS-safe release-info endpoint (served from www, bypasses Sandstorm gateway)
+    RELEASE_INFO_URL: function(domain) {
+        // The app domain goes through Sandstorm TLS passthrough (blocks HTTP routes).
+        // Use the www subdomain which terminates TLS at the AWS nginx layer.
+        var base = domain.replace(/^app\./, 'www.');
+        if (base === domain) base = 'www.' + domain.replace(/^www\./, '');
+        return 'https://' + base + '/melusina/release-info';
+    },
 };
 
 let net = 'devnet', mode = 'paste', exportData = null;
@@ -602,15 +610,27 @@ async function run() {
             cmp('Threshold (DNS)', claimed_dns_threshold, raw.threshold, false);
             cmp('Auth Commitment (DNS)', claimed_dns_auth, dns.auth, false);
 
-            // Cross-check release hash against server endpoint (if reachable)
+            // Cross-check pasted release hash against DNS release hash (CRITICAL anti-spoof)
+            // A compromised server can lie about its own hash, but DNS is controlled by the operator
+            if (dns.release && dns.release.sha256) {
+                cmp('Release Hash (server claim vs DNS)', claimed_hash, dns.release.sha256, true);
+                cmp('Release Version (server claim vs DNS)', claimed_version, dns.release.version, false);
+            }
+
+            // Cross-check release hash against server endpoint (CORS-safe www endpoint)
             try {
-                var ri = await fetch('https://' + domain + '/melusina/release-info', { signal: AbortSignal.timeout(5000) });
+                var riUrl = C.RELEASE_INFO_URL(domain);
+                var ri = await fetch(riUrl, { signal: AbortSignal.timeout(6000) });
                 if (ri.ok) {
                     var info = await ri.json();
                     cmp('Release Version (endpoint)', claimed_version, info.version, false);
                     cmp('Release Hash (endpoint)', claimed_hash, info.sha256, false);
+                    // Also verify endpoint data matches DNS (detect endpoint spoofing)
+                    if (dns.release && dns.release.sha256) {
+                        cmp('Endpoint hash vs DNS hash', info.sha256, dns.release.sha256, true);
+                    }
                 }
-            } catch (e) { /* endpoint not reachable from here, which is fine */ }
+            } catch (e) { /* endpoint not reachable from GitHub Pages, relying on DNS cross-check */ }
 
             renderCrossCheck(crossRows);
             show('crossCheckCard');
@@ -691,6 +711,29 @@ async function run() {
             l3.push({ name: 'Release hash in DNS', s: 'pass', detail: 'sha256=<code>' + short(dns.release.sha256) + '</code> v' + (dns.release.version || '?') });
         } else {
             l3.push({ name: 'Release hash in DNS', s: 'warn', detail: 'No release hash published' });
+        }
+
+        // Independent endpoint verification (fetch release-info from CORS-safe endpoint)
+        try {
+            var epUrl = C.RELEASE_INFO_URL(domain);
+            var epResp = await fetch(epUrl, { signal: AbortSignal.timeout(6000) });
+            if (epResp.ok) {
+                var epInfo = await epResp.json();
+                if (dns.release && dns.release.sha256) {
+                    var hashMatch = epInfo.sha256 === dns.release.sha256;
+                    l3.push({
+                        name: 'Release endpoint vs DNS',
+                        s: hashMatch ? 'pass' : 'fail',
+                        detail: hashMatch
+                            ? 'Server endpoint hash matches DNS record (anti-spoof: verified)'
+                            : '<strong style="color:#dc2626">SPOOF DETECTED:</strong> endpoint says <code>' + short(epInfo.sha256) + '</code> but DNS says <code>' + short(dns.release.sha256) + '</code>',
+                    });
+                } else {
+                    l3.push({ name: 'Release endpoint', s: 'warn', detail: 'Endpoint reachable (v' + (epInfo.version || '?') + ') but no DNS record to cross-check' });
+                }
+            }
+        } catch (e) {
+            l3.push({ name: 'Release endpoint', s: 'warn', detail: 'Endpoint unreachable (CORS or network) &mdash; relying on DNS only' });
         }
 
         if (dns.threshold) {
