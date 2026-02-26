@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TrustMaster — Melusina Independent Verifier</title>
+    <meta name="description" content="Independent 4-layer trust verification for Melusina deployments. Detects MITM attacks by cross-checking server claims against on-chain and DNS truth.">
+    <style>
+        :root {
+            --primary: #9945FF;
+            --secondary: #14F195;
+            --foundation: #4a90d9;
+            --reseller: #50c878;
+            --licensee: #f5a623;
+            --share: #9b59b6;
+            --ok: #059669;
+            --ok-bg: #ecfdf5;
+            --warn: #d97706;
+            --warn-bg: #fffbeb;
+            --bad: #dc2626;
+            --bad-bg: #fef2f2;
+            --skip: #6b7280;
+            --dark: #1f2937;
+            --muted: #6b7280;
+            --bg: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Inter', system-ui, sans-serif; line-height: 1.6; color: var(--dark); background: var(--bg); min-height: 100vh; padding: 20px; }
+        .container { max-width: 960px; margin: 0 auto; }
+
+        /* Header */
+        header { background: rgba(255,255,255,0.98); border-radius: 20px; padding: 36px; margin-bottom: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; position: relative; }
+        header::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 5px; background: linear-gradient(90deg, var(--foundation), var(--reseller), var(--licensee), var(--share)); border-radius: 20px 20px 0 0; }
+        .logo { font-size: 3.5rem; margin-bottom: 10px; }
+        h1 { font-size: 2rem; background: linear-gradient(135deg, var(--primary), var(--secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 6px; }
+        .subtitle { color: var(--muted); font-size: 1rem; }
+        .trust-note { display: inline-block; margin-top: 12px; background: var(--ok-bg); border: 1px solid var(--ok); color: var(--ok); padding: 6px 16px; border-radius: 20px; font-size: 0.82rem; font-weight: 600; }
+
+        /* Cards */
+        .card { background: rgba(255,255,255,0.98); border-radius: 16px; padding: 24px; margin-bottom: 18px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); }
+        .card h2 { color: var(--primary); font-size: 1.2rem; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+        .tab { padding: 10px 20px; border: 2px solid #e5e7eb; border-radius: 8px; background: white; cursor: pointer; font-weight: 600; transition: all 0.2s; font-size: 0.95rem; }
+        .tab:hover { border-color: var(--primary); }
+        .tab.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+        /* Inputs */
+        .input-group { display: flex; gap: 12px; margin-bottom: 14px; }
+        .input-group input { flex: 1; padding: 14px 18px; border: 2px solid #e5e7eb; border-radius: 12px; font-size: 1rem; }
+        .input-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px rgba(153,69,255,0.15); }
+        textarea { width: 100%; padding: 14px; border: 2px solid #e5e7eb; border-radius: 12px; font-family: 'Courier New', monospace; font-size: 0.85rem; resize: vertical; }
+        textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px rgba(153,69,255,0.15); }
+
+        /* Network selector */
+        .net-sel { display: flex; gap: 8px; margin-bottom: 14px; }
+        .net-btn { padding: 7px 16px; border: 2px solid #e5e7eb; border-radius: 8px; background: white; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+        .net-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+        /* Buttons */
+        .btn { display: inline-flex; align-items: center; gap: 10px; padding: 13px 26px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.15s; }
+        .btn:hover:not(:disabled) { transform: translateY(-1px); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-primary { background: linear-gradient(135deg, var(--primary), #7c3aed); color: white; box-shadow: 0 4px 15px rgba(153,69,255,0.4); }
+        .btn-sm { padding: 8px 16px; font-size: 0.85rem; border-radius: 8px; }
+        .btn-ghost { background: #f3f4f6; color: var(--dark); }
+        .button-row { display: flex; gap: 12px; flex-wrap: wrap; }
+
+        /* Status banner */
+        .banner { padding: 22px; border-radius: 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 18px; }
+        .banner.ok { background: linear-gradient(135deg, #ecfdf5, #d1fae5); border: 2px solid var(--ok); }
+        .banner.warn { background: linear-gradient(135deg, #fffbeb, #fef3c7); border: 2px solid var(--warn); }
+        .banner.bad { background: linear-gradient(135deg, #fef2f2, #fee2e2); border: 2px solid var(--bad); }
+        .banner .icon { font-size: 3rem; }
+        .banner h3 { font-size: 1.3rem; margin-bottom: 2px; }
+        .banner p { color: var(--muted); font-size: 0.95rem; }
+
+        /* MITM alert */
+        .mitm-alert { padding: 20px; border-radius: 16px; margin-bottom: 20px; border: 3px solid var(--bad); background: linear-gradient(135deg, #fef2f2, #fecaca); }
+        .mitm-alert h3 { color: var(--bad); margin-bottom: 8px; font-size: 1.2rem; }
+        .mitm-alert p { font-size: 0.95rem; }
+        .mitm-alert .mismatches { margin-top: 12px; }
+        .mitm-alert .mm-row { padding: 8px 12px; background: white; border-radius: 8px; margin-bottom: 6px; font-family: monospace; font-size: 0.82rem; border-left: 4px solid var(--bad); }
+        .mitm-alert .mm-row .lbl { font-weight: 700; color: var(--bad); }
+
+        /* Comparison table */
+        .cmp-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+        .cmp-table th { text-align: left; padding: 10px 14px; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 2px solid #e5e7eb; }
+        .cmp-table td { padding: 10px 14px; border-bottom: 1px solid #f3f4f6; font-size: 0.88rem; vertical-align: top; }
+        .cmp-table tr:last-child td { border-bottom: none; }
+        .cmp-table .field { font-weight: 600; color: var(--dark); white-space: nowrap; }
+        .cmp-table .mono { font-family: 'Courier New', monospace; font-size: 0.8rem; word-break: break-all; }
+        .cmp-table .match { color: var(--ok); }
+        .cmp-table .mismatch { color: var(--bad); font-weight: 700; }
+        .cmp-table .na { color: var(--muted); font-style: italic; }
+        .cmp-table .verdict { text-align: center; }
+        .v-ok { display: inline-block; background: var(--ok-bg); color: var(--ok); padding: 2px 10px; border-radius: 12px; font-weight: 700; font-size: 0.78rem; }
+        .v-bad { display: inline-block; background: var(--bad-bg); color: var(--bad); padding: 2px 10px; border-radius: 12px; font-weight: 700; font-size: 0.78rem; }
+        .v-warn { display: inline-block; background: var(--warn-bg); color: var(--warn); padding: 2px 10px; border-radius: 12px; font-weight: 700; font-size: 0.78rem; }
+        .v-skip { display: inline-block; background: #f3f4f6; color: var(--skip); padding: 2px 10px; border-radius: 12px; font-weight: 700; font-size: 0.78rem; }
+
+        /* Layer sections */
+        .layer { margin-bottom: 18px; border-left: 4px solid #e5e7eb; padding-left: 18px; }
+        .layer.l1 { border-color: var(--foundation); }
+        .layer.l2 { border-color: var(--reseller); }
+        .layer.l3 { border-color: var(--licensee); }
+        .layer.l4 { border-color: var(--share); }
+        .layer-hdr { font-size: 1.05rem; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+        .lbadge { padding: 3px 10px; border-radius: 6px; font-size: 0.7em; color: white; }
+        .l1 .lbadge { background: var(--foundation); }
+        .l2 .lbadge { background: var(--reseller); }
+        .l3 .lbadge { background: var(--licensee); color: #333; }
+        .l4 .lbadge { background: var(--share); }
+        .check { background: white; border: 2px solid #e5e7eb; border-radius: 10px; padding: 14px; margin-bottom: 8px; }
+        .check.pass { border-color: var(--ok); background: linear-gradient(135deg, white, #f0fdf4); }
+        .check.warn { border-color: var(--warn); background: linear-gradient(135deg, white, #fffbeb); }
+        .check.fail { border-color: var(--bad); background: linear-gradient(135deg, white, #fef2f2); }
+        .check.skip { border-color: var(--skip); background: linear-gradient(135deg, white, #f9fafb); }
+        .check-hdr { display: flex; align-items: center; gap: 10px; }
+        .check-name { font-weight: 600; flex: 1; }
+        .check-st { padding: 2px 10px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
+        .check.pass .check-st { background: var(--ok-bg); color: var(--ok); }
+        .check.warn .check-st { background: var(--warn-bg); color: var(--warn); }
+        .check.fail .check-st { background: var(--bad-bg); color: var(--bad); }
+        .check.skip .check-st { background: #f3f4f6; color: var(--skip); }
+        .check-detail { font-size: 0.82rem; color: var(--muted); margin-top: 6px; }
+        .check-detail code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.78rem; }
+
+        /* TLS manual check box */
+        .tls-check-box { background: linear-gradient(135deg, #eff6ff, #dbeafe); border: 2px solid #3b82f6; border-radius: 12px; padding: 18px; margin: 14px 0; }
+        .tls-check-box h4 { color: #1d4ed8; margin-bottom: 10px; }
+        .tls-check-box ol { margin-left: 20px; font-size: 0.9rem; }
+        .tls-check-box li { margin-bottom: 6px; }
+        .tls-check-box .fp { background: #1e293b; color: #14F195; padding: 10px 14px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; margin: 10px 0; word-break: break-all; user-select: all; }
+
+        /* Export */
+        .export-json { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.82rem; white-space: pre-wrap; margin-top: 12px; }
+
+        /* Spinner */
+        .spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid #e5e7eb; border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .hidden { display: none; }
+        footer { text-align: center; padding: 30px; color: rgba(255,255,255,0.8); }
+        footer a { color: var(--secondary); text-decoration: none; font-weight: 600; }
+
+        @media (max-width: 768px) {
+            .input-group, .button-row { flex-direction: column; }
+            .btn { width: 100%; }
+            .banner { flex-direction: column; text-align: center; }
+            .cmp-table { font-size: 0.8rem; }
+            .cmp-table td, .cmp-table th { padding: 6px 8px; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="logo">&#x1f41a;</div>
+        <h1>TrustMaster</h1>
+        <p class="subtitle">Independent verification &mdash; runs outside the server, can&rsquo;t be spoofed</p>
+        <div class="trust-note">&#10003; This page runs on GitHub Pages &mdash; not on the Melusina server</div>
+    </header>
+
+    <!-- Input card -->
+    <div class="card">
+        <h2>&#x1f50d; Verify</h2>
+        <div class="tabs">
+            <div class="tab active" data-mode="paste">&#x1f4cb; Paste from DNA Button</div>
+            <div class="tab" data-mode="domain">&#x1f310; Domain Lookup</div>
+        </div>
+
+        <div id="pastePanel">
+            <p style="margin-bottom:10px;color:var(--muted);font-size:0.9rem;">
+                Paste the verification data from the &#x1f9ec; DNA button, then enter your browser&rsquo;s TLS certificate details.
+                TrustMaster will independently re-check every claim against DNS and the blockchain.
+            </p>
+            <textarea id="pasteInput" rows="12" placeholder="=== CONNECTION ===
+domain:            app.melusina-os.org
+url:               https://app.melusina-os.org/
+protocol:          https:
+
+=== SOLANA CHAIN ===
+network:           devnet
+...
+
+=== DNS RECORDS ===
+dns_tls_fp:        da07c332...
+...
+
+=== BUILD (server-reported) ===
+..."></textarea>
+
+            <div style="margin-top:14px;padding:16px;background:linear-gradient(135deg,#eff6ff,#dbeafe);border:2px solid #3b82f6;border-radius:12px;">
+                <h4 style="color:#1d4ed8;margin-bottom:8px;font-size:0.95rem;">&#x1f512; Your Browser&rsquo;s TLS Certificate (REQUIRED)</h4>
+                <p style="color:#4b5563;font-size:0.85rem;margin-bottom:12px;line-height:1.5;">
+                    To detect MITM attacks, paste the SHA-256 fingerprint and public key from your browser&rsquo;s certificate viewer.
+                    <strong>Without these, verification cannot complete.</strong>
+                </p>
+                <p style="color:#6b7280;font-size:0.8rem;margin-bottom:10px;">
+                    &#x1f512; Address bar &rarr; Certificate &rarr; Details &rarr; SHA-256 Fingerprint &amp; Public Key
+                </p>
+                <div class="input-group" style="margin-bottom:8px;">
+                    <input type="text" id="certFPInput" placeholder="Certificate SHA-256 fingerprint (e.g. 629a717bc6f2...)" style="font-family:monospace;font-size:0.85rem;">
+                </div>
+                <div class="input-group" style="margin-bottom:0;">
+                    <input type="text" id="certPKInput" placeholder="Public Key (e.g. 1153204438e8...)" style="font-family:monospace;font-size:0.85rem;">
+                </div>
+            </div>
+        </div>
+
+        <div id="domainPanel" class="hidden">
+            <div class="input-group">
+                <input type="text" id="domainInput" placeholder="e.g. app.melusina-os.org">
+            </div>
+        </div>
+
+        <div class="net-sel">
+            <button class="net-btn active" data-net="devnet">Devnet</button>
+            <button class="net-btn" data-net="mainnet-beta">Mainnet</button>
+        </div>
+
+        <div class="button-row">
+            <button class="btn btn-primary" id="goBtn">&#x1f50d; Verify</button>
+        </div>
+    </div>
+
+    <!-- Results -->
+    <div id="results" class="hidden">
+        <!-- MITM alert (shown only if mismatches found) -->
+        <div id="mitmAlert" class="mitm-alert hidden">
+            <h3>&#x26a0;&#xfe0f; POSSIBLE MITM / COMPROMISED SERVER</h3>
+            <p>The server&rsquo;s DNA report disagrees with independently-verified data.
+               This means the server you connected to may be intercepting your connection
+               or serving spoofed verification data.</p>
+            <div id="mitmMismatches" class="mismatches"></div>
+        </div>
+
+        <!-- Overall banner -->
+        <div id="statusBanner" class="banner ok">
+            <div class="icon">&#x2705;</div>
+            <div><h3>Verified</h3><p>Trust chain checks passed</p></div>
+        </div>
+
+        <!-- Cross-check table (paste mode only) -->
+        <div id="crossCheckCard" class="card hidden">
+            <h2>&#x1f52c; Cross-Check: Server Claims vs. Independent Truth</h2>
+            <p style="color:var(--muted);font-size:0.88rem;margin-bottom:14px;">
+                Left column = what the server told your browser.
+                Right column = what TrustMaster independently verified from DNS and blockchain.
+            </p>
+            <div style="overflow-x:auto;">
+            <table class="cmp-table">
+                <thead><tr><th>Field</th><th>Server Claimed</th><th>Independently Verified</th><th>Verdict</th></tr></thead>
+                <tbody id="crossCheckBody"></tbody>
+            </table>
+            </div>
+        </div>
+
+        <!-- TLS manual verification box -->
+        <div id="tlsBox" class="card hidden">
+            <h2>&#x1f512; TLS Certificate Verification</h2>
+            <div class="tls-check-box">
+                <h4>Manual Browser Check (the one thing only YOU can verify)</h4>
+                <p>JavaScript cannot read your browser&rsquo;s TLS certificate. To confirm you&rsquo;re not being MITMed,
+                   verify your browser&rsquo;s certificate fingerprint matches the one published in DNS:</p>
+                <div class="fp" id="expectedFP">Loading...</div>
+                <ol>
+                    <li>In another tab, navigate to <strong id="tlsDomainLink"></strong></li>
+                    <li>Click the <strong>lock icon</strong> (&#x1f512;) in your browser&rsquo;s address bar</li>
+                    <li>Click <strong>&ldquo;Connection is secure&rdquo;</strong> &rarr; <strong>&ldquo;Certificate&rdquo;</strong></li>
+                    <li>Find the <strong>SHA-256 Fingerprint</strong> (under Details &rarr; Fingerprints)</li>
+                    <li>It should match the value above exactly</li>
+                </ol>
+                <p style="margin-top:10px;font-size:0.85rem;color:var(--muted);">
+                    If it doesn&rsquo;t match, someone is intercepting your connection with a different certificate.
+                </p>
+            </div>
+        </div>
+
+        <!-- Layer results -->
+        <div class="card">
+            <div class="layer l3">
+                <div class="layer-hdr"><span class="lbadge">L3</span> &#x1f4dc; Licensee</div>
+                <div id="l3checks"></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="layer l1">
+                <div class="layer-hdr"><span class="lbadge">L1</span> &#x1f3db;&#xfe0f; Foundation</div>
+                <div id="l1checks"></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="layer l2">
+                <div class="layer-hdr"><span class="lbadge">L2</span> &#x1f3ea; Reseller</div>
+                <div id="l2checks"></div>
+            </div>
+        </div>
+
+        <!-- Export -->
+        <div class="card">
+            <h2>&#x1f4e4; Export</h2>
+            <div class="button-row">
+                <button class="btn btn-sm btn-ghost" onclick="copyExport()">&#x1f4cb; Copy JSON</button>
+                <button class="btn btn-sm btn-ghost" onclick="dlExport()">&#x1f4be; Download</button>
+            </div>
+            <div id="exportJSON" class="export-json"></div>
+        </div>
+    </div>
+
+    <footer>
+        <p><strong>TrustMaster</strong> v3.0 &mdash; Independent Melusina Verifier<br>
+        <a href="https://github.com/nicosql/nicosql.github.io">Source</a> &middot;
+        <a href="https://melusina-os.org">Melusina OS</a></p>
+        <p style="margin-top:10px;font-size:0.82rem;color:rgba(255,255,255,0.5);">
+            Runs entirely in your browser. No server calls except DNS-over-HTTPS and Solana RPC.
+        </p>
+    </footer>
+</div>
+
+<script>
+// ============================================================================
+// CONFIG
+// ============================================================================
+const C = {
+    DOH: ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'],
+    RPC: { devnet: 'https://api.devnet.solana.com', 'mainnet-beta': 'https://api.mainnet-beta.solana.com' },
+    PROGRAM_ID: '8bVLhPF9suNrB3Tj5q9Ps6uyonhWxeTUpXTyDRwitnR9',
+    MASTER_NFT: 'CnnETKyqcTLG1GTKibYjEv7vdXxPnwWAzLZTA81E5FRN',
+    // CORS-safe release-info endpoint (served from www, bypasses Sandstorm gateway)
+    RELEASE_INFO_URL: function(domain) {
+        // The app domain goes through Sandstorm TLS passthrough (blocks HTTP routes).
+        // Use the www subdomain which terminates TLS at the AWS nginx layer.
+        var base = domain.replace(/^app\./, 'www.');
+        if (base === domain) base = 'www.' + domain.replace(/^www\./, '');
+        return 'https://' + base + '/melusina/release-info';
+    },
+};
+
+let net = 'devnet', mode = 'paste', exportData = null;
+
+// ============================================================================
+// UI WIRING
+// ============================================================================
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    mode = t.dataset.mode;
+    document.getElementById('pastePanel').classList.toggle('hidden', mode !== 'paste');
+    document.getElementById('domainPanel').classList.toggle('hidden', mode !== 'domain');
+}));
+document.querySelectorAll('.net-btn').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.net-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    net = b.dataset.net;
+}));
+document.getElementById('goBtn').addEventListener('click', run);
+document.getElementById('domainInput').addEventListener('keypress', e => { if (e.key === 'Enter') run(); });
+
+// Auto-fill from URL params
+window.addEventListener('load', () => {
+    const p = new URLSearchParams(location.search);
+    if (p.get('domain')) {
+        document.getElementById('domainInput').value = p.get('domain');
+        document.querySelector('[data-mode="domain"]').click();
+    }
+    if (p.get('network')) {
+        net = p.get('network');
+        document.querySelectorAll('.net-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.net === net);
+        });
+    }
+});
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+async function doh(name, type) {
+    type = type || 'TXT';
+    for (var i = 0; i < C.DOH.length; i++) {
+        try {
+            var r = await fetch(C.DOH[i] + '?name=' + encodeURIComponent(name) + '&type=' + type, {
+                headers: { Accept: 'application/dns-json' },
+                signal: AbortSignal.timeout(6000),
+            });
+            if (!r.ok) continue;
+            var d = await r.json();
+            return (d.Answer || []).map(function(a) { return (a.data || '').replace(/^"|"$/g, ''); });
+        } catch (e) { /* try next */ }
+    }
+    return [];
+}
+
+function parseTxt(v) {
+    var r = {};
+    if (!v) return r;
+    v.split(';').forEach(function(p) {
+        var parts = p.split('=');
+        var k = parts[0];
+        var vs = parts.slice(1);
+        if (k && vs.length) r[k.trim().toLowerCase()] = vs.join('=').trim();
+    });
+    return r;
+}
+
+async function rpc(method, params) {
+    params = params || [];
+    var r = await fetch(C.RPC[net], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: params }),
+        signal: AbortSignal.timeout(15000),
+    });
+    var d = await r.json();
+    if (d.error) throw new Error(d.error.message);
+    return d.result;
+}
+
+async function nftExists(mint) {
+    try {
+        var r = await rpc('getTokenLargestAccounts', [mint]);
+        return r && r.value && r.value[0] && r.value[0].amount !== '0';
+    } catch (e) { return false; }
+}
+
+function short(s, n) {
+    n = n || 16;
+    return s && s.length > n + 4 ? s.slice(0, n) + '...' : s || '';
+}
+function el(id) { return document.getElementById(id); }
+function show(id) { el(id).classList.remove('hidden'); }
+function hide(id) { el(id).classList.add('hidden'); }
+
+// Parse the DNA button === SECTION === format
+function parseDNA(text) {
+    var sections = {};
+    var cur = null;
+    var lines = text.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var m = line.match(/^=== (.+?) ===$/);
+        if (m) { cur = m[1].trim(); sections[cur] = {}; continue; }
+        if (cur && line.indexOf(':') !== -1) {
+            var idx = line.indexOf(':');
+            var k = line.substring(0, idx).trim();
+            var v = line.substring(idx + 1).trim();
+            if (k && v) sections[cur][k] = v;
+        }
+    }
+    return sections;
+}
+
+// ============================================================================
+// RENDERING
+// ============================================================================
+function setStatus(cls, icon, title, msg) {
+    var b = el('statusBanner');
+    b.className = 'banner ' + cls;
+    b.innerHTML = '<div class="icon">' + icon + '</div><div><h3>' + title + '</h3><p>' + msg + '</p></div>';
+}
+
+function renderChecks(id, checks) {
+    el(id).innerHTML = checks.map(function(ch) {
+        var ico = { pass: '&#10003;', warn: '&#9888;', fail: '&#10007;', skip: '&ndash;' }[ch.s] || '?';
+        var st = { pass: 'Verified', warn: 'Warning', fail: 'Failed', skip: 'Skipped' }[ch.s] || ch.s;
+        var det = '';
+        if (ch.detail) det = '<div class="check-detail">' + ch.detail + '</div>';
+        return '<div class="check ' + ch.s + '"><div class="check-hdr"><span>' + ico + '</span><span class="check-name">' + ch.name + '</span><span class="check-st">' + st + '</span></div>' + det + '</div>';
+    }).join('');
+}
+
+function renderCrossCheck(rows) {
+    el('crossCheckBody').innerHTML = rows.map(function(r) {
+        var vcls = r.verdict === 'match' ? 'v-ok' : r.verdict === 'mismatch' ? 'v-bad' : r.verdict === 'warn' ? 'v-warn' : 'v-skip';
+        var vtxt = r.verdict === 'match' ? '&#10003; Match' : r.verdict === 'mismatch' ? '&#10007; MISMATCH' : r.verdict === 'warn' ? '&#9888; Check' : '&mdash; N/A';
+        var claimed = r.claimed ? '<span class="mono">' + esc(short(r.claimed, 48)) + '</span>' : '<span class="na">not provided</span>';
+        var verified = r.verified ? '<span class="mono">' + esc(short(r.verified, 48)) + '</span>' : '<span class="na">not found</span>';
+        return '<tr><td class="field">' + esc(r.field) + '</td><td>' + claimed + '</td><td>' + verified + '</td><td class="verdict"><span class="' + vcls + '">' + vtxt + '</span></td></tr>';
+    }).join('');
+}
+
+function esc(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+// ============================================================================
+// MAIN VERIFICATION
+// ============================================================================
+async function run() {
+    var domain = '', pastedClaims = null;
+
+    if (mode === 'paste') {
+        var raw = el('pasteInput').value.trim();
+        if (!raw) return alert('Paste the DNA button output first.');
+
+        // Require TLS cert fields
+        var certFP = (el('certFPInput').value || '').trim().replace(/[:\s]/g, '').toLowerCase();
+        var certPK = (el('certPKInput').value || '').trim().replace(/[:\s]/g, '').toLowerCase();
+        if (!certFP || certFP.length < 32) return alert('Certificate SHA-256 fingerprint is required.\n\nClick the lock icon in your browser\'s address bar → Certificate → Details → SHA-256 Fingerprint');
+        if (!certPK || certPK.length < 32) return alert('Certificate Public Key is required.\n\nClick the lock icon in your browser\'s address bar → Certificate → Details → Public Key');
+
+        pastedClaims = parseDNA(raw);
+        domain = (pastedClaims.CONNECTION && (pastedClaims.CONNECTION.domain || pastedClaims.CONNECTION.Host)) || '';
+        if (!domain) return alert('No domain found in pasted data. Make sure you paste the full output from the DNA button.');
+        // Auto-detect network from paste
+        var pastedNet = pastedClaims['SOLANA CHAIN'] && pastedClaims['SOLANA CHAIN'].network;
+        if (pastedNet && C.RPC[pastedNet]) {
+            net = pastedNet;
+            document.querySelectorAll('.net-btn').forEach(function(b) {
+                b.classList.toggle('active', b.dataset.net === net);
+            });
+        }
+    } else {
+        domain = el('domainInput').value.trim();
+    }
+    if (!domain) return alert('Enter a domain to verify.');
+
+    var btn = el('goBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Verifying...';
+    show('results');
+    hide('mitmAlert');
+    hide('crossCheckCard');
+    hide('tlsBox');
+    setStatus('warn', '&#9203;', 'Verifying...', 'Checking ' + esc(domain) + ' on ' + net);
+    el('l1checks').innerHTML = el('l2checks').innerHTML = el('l3checks').innerHTML = '<div style="color:var(--muted)">Checking...</div>';
+
+    try {
+        // ── Independent lookups (the TRUSTWORTHY data) ──
+        var results = await Promise.all([
+            doh('_melusina.' + domain),
+            doh('_melusina-release.' + domain),
+            doh('_melusina-threshold.' + domain),
+            doh('_melusina-auth.' + domain),
+            doh('_melusina-tls.' + domain),
+        ]);
+        var melRaw = results[0], relRaw = results[1], thrRaw = results[2],
+            authRaw = results[3], tlsRaw = results[4];
+
+        var dns = {
+            melusina: melRaw.length ? parseTxt(melRaw[0]) : null,
+            release: relRaw.length ? parseTxt(relRaw[0]) : null,
+            threshold: thrRaw.length ? parseTxt(thrRaw[0]) : null,
+            auth: authRaw.length ? authRaw[0] : null,
+            tls: tlsRaw.length ? parseTxt(tlsRaw[0]) : null,
+        };
+        // Keep raw strings for cross-check (avoids reconstruction mismatches)
+        var raw = {
+            release: relRaw.length ? relRaw[0] : null,
+            threshold: thrRaw.length ? thrRaw[0] : null,
+            auth: authRaw.length ? authRaw[0] : null,
+        };
+
+        var licenseMint = dns.melusina ? (dns.melusina.license || null) : null;
+        var tlsFP = (dns.tls && dns.tls.sha256) || (dns.melusina && dns.melusina.tls_fp) || null;
+        var resellerMint = dns.melusina ? (dns.melusina.reseller || null) : null;
+        var dnsNetwork = dns.melusina ? (dns.melusina.network || null) : null;
+
+        // ── Cross-check if paste mode ──
+        var crossRows = [];
+        var mismatches = [];
+
+        if (pastedClaims) {
+            var pc = pastedClaims;
+            var sc = pc['SOLANA CHAIN'] || {};
+            var dr = pc['DNS RECORDS'] || {};
+            var bu = pc['BUILD (server-reported)'] || {};
+
+            var claimed_license = sc.license_nft;
+            var claimed_network = sc.network;
+            var claimed_program = sc.program_id;
+            var claimed_master = sc.master_nft;
+            var claimed_reseller = sc.reseller_nft;
+            var claimed_dns_tls = dr.dns_tls_fp;
+            var claimed_dns_release = dr.dns_release;
+            var claimed_dns_threshold = dr.dns_threshold;
+            var claimed_dns_auth = dr.dns_auth;
+            var claimed_version = bu.release_version;
+            var claimed_hash = bu.release_hash;
+
+            function cmp(field, claimed, verified, critical) {
+                var cl = claimed && claimed !== '(not found)' ? claimed : null;
+                var vr = verified || null;
+                var verdict = 'na';
+                if (cl && vr) {
+                    verdict = cl === vr ? 'match' : 'mismatch';
+                    if (verdict === 'mismatch' && critical) mismatches.push({ field: field, claimed: cl, verified: vr });
+                } else if (cl && !vr) {
+                    verdict = 'warn';
+                } else if (!cl && vr) {
+                    verdict = 'warn';
+                }
+                crossRows.push({ field: field, claimed: cl, verified: vr, verdict: verdict });
+            }
+
+            cmp('License NFT', claimed_license, licenseMint, true);
+            cmp('Network', claimed_network, dnsNetwork, true);
+            cmp('Program ID', claimed_program, C.PROGRAM_ID, true);
+            cmp('Master NFT', claimed_master, C.MASTER_NFT, true);
+            cmp('Reseller NFT', claimed_reseller, resellerMint, false);
+            cmp('TLS Fingerprint (DNS)', claimed_dns_tls, tlsFP, true);
+
+            // Use raw DoH strings for DNS record comparison (avoids key-order/whitespace issues)
+            cmp('Release (DNS)', claimed_dns_release, raw.release, false);
+            cmp('Threshold (DNS)', claimed_dns_threshold, raw.threshold, false);
+            cmp('Auth Commitment (DNS)', claimed_dns_auth, dns.auth, false);
+
+            // Cross-check pasted release hash against DNS release hash (CRITICAL anti-spoof)
+            // A compromised server can lie about its own hash, but DNS is controlled by the operator
+            if (dns.release && dns.release.sha256) {
+                cmp('Release Hash (server claim vs DNS)', claimed_hash, dns.release.sha256, true);
+                cmp('Release Version (server claim vs DNS)', claimed_version, dns.release.version, false);
+            }
+
+            // Cross-check release hash against server endpoint (CORS-safe www endpoint)
+            try {
+                var riUrl = C.RELEASE_INFO_URL(domain);
+                var ri = await fetch(riUrl, { signal: AbortSignal.timeout(6000) });
+                if (ri.ok) {
+                    var info = await ri.json();
+                    cmp('Release Version (endpoint)', claimed_version, info.version, false);
+                    cmp('Release Hash (endpoint)', claimed_hash, info.sha256, false);
+                    // Also verify endpoint data matches DNS (detect endpoint spoofing)
+                    if (dns.release && dns.release.sha256) {
+                        cmp('Endpoint hash vs DNS hash', info.sha256, dns.release.sha256, true);
+                    }
+                }
+            } catch (e) { /* endpoint not reachable from GitHub Pages, relying on DNS cross-check */ }
+
+            renderCrossCheck(crossRows);
+            show('crossCheckCard');
+
+            if (mismatches.length > 0) {
+                el('mitmMismatches').innerHTML = mismatches.map(function(m) {
+                    return '<div class="mm-row"><span class="lbl">' + esc(m.field) + ':</span> Server said <code>' + esc(short(m.claimed, 24)) + '</code> but DNS/chain says <code>' + esc(short(m.verified, 24)) + '</code></div>';
+                }).join('');
+                show('mitmAlert');
+            }
+        }
+
+        // ── TLS certificate cross-check (the CRITICAL MITM detection) ──
+        if (pastedClaims) {
+            var tlsCertMatch = 'na';
+            if (certFP && tlsFP) {
+                var normalizedDnsFP = tlsFP.replace(/[:\s]/g, '').toLowerCase();
+                tlsCertMatch = (certFP === normalizedDnsFP) ? 'match' : 'mismatch';
+                if (tlsCertMatch === 'mismatch') {
+                    mismatches.push({ field: 'TLS Certificate Fingerprint', claimed: certFP, verified: normalizedDnsFP });
+                }
+                crossRows.unshift({ field: 'TLS Cert Fingerprint (YOUR browser)', claimed: certFP, verified: normalizedDnsFP, verdict: tlsCertMatch });
+            } else if (certFP && !tlsFP) {
+                crossRows.unshift({ field: 'TLS Cert Fingerprint (YOUR browser)', claimed: certFP, verified: null, verdict: 'warn' });
+            }
+            if (certPK) {
+                crossRows.splice(1, 0, { field: 'TLS Public Key (YOUR browser)', claimed: certPK, verified: null, verdict: 'warn' });
+            }
+        }
+
+        // ── TLS fingerprint manual-check box ──
+        if (tlsFP) {
+            el('expectedFP').textContent = 'SHA-256: ' + tlsFP;
+            el('tlsDomainLink').innerHTML = '<a href="https://' + esc(domain) + '/" target="_blank" rel="noopener">https://' + esc(domain) + '/</a>';
+            show('tlsBox');
+            // Show match/mismatch result in the TLS box
+            if (certFP) {
+                var normalizedDnsFP = tlsFP.replace(/[:\s]/g, '').toLowerCase();
+                var matchResult = certFP === normalizedDnsFP;
+                var resultHTML = matchResult
+                    ? '<div style="margin-top:12px;padding:12px;background:#ecfdf5;border:2px solid #059669;border-radius:8px;"><strong style="color:#059669;">\u2713 MATCH</strong> — Your browser\'s certificate fingerprint matches the DNS record. No MITM detected for TLS.</div>'
+                    : '<div style="margin-top:12px;padding:12px;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;"><strong style="color:#dc2626;">\u2717 MISMATCH — POSSIBLE MITM</strong><br>Your browser sees: <code>' + esc(certFP) + '</code><br>DNS says it should be: <code>' + esc(normalizedDnsFP) + '</code><br>Someone may be intercepting your connection with a different certificate!</div>';
+                el('tlsBox').querySelector('.tls-check-box').insertAdjacentHTML('beforeend', resultHTML);
+            }
+        }
+
+        // ── L3: Licensee ──
+        var l3 = [];
+        var validLicense = false;
+
+        if (dns.melusina) {
+            l3.push({ name: 'DNS _melusina record', s: 'pass', detail: 'license=<code>' + short(licenseMint) + '</code> &middot; network=<code>' + (dnsNetwork || '?') + '</code>' });
+        } else {
+            l3.push({ name: 'DNS _melusina record', s: 'fail', detail: 'No _melusina TXT record found for <code>' + esc(domain) + '</code>' });
+        }
+
+        if (licenseMint && licenseMint !== 'pending') {
+            var exists = await nftExists(licenseMint);
+            if (exists) {
+                validLicense = true;
+                l3.push({ name: 'License NFT on-chain', s: 'pass', detail: 'Mint <code>' + licenseMint + '</code> exists with supply &gt; 0' });
+            } else {
+                l3.push({ name: 'License NFT on-chain', s: 'fail', detail: 'Mint <code>' + licenseMint + '</code> not found or zero supply' });
+            }
+        } else if (licenseMint === 'pending') {
+            l3.push({ name: 'License NFT on-chain', s: 'fail', detail: 'DNS says <code>license=pending</code> &mdash; deploy did not publish the license mint' });
+        } else {
+            l3.push({ name: 'License NFT on-chain', s: 'fail', detail: 'No license mint in DNS to check' });
+        }
+
+        if (tlsFP) {
+            l3.push({ name: 'TLS fingerprint in DNS', s: 'pass', detail: '<code>' + short(tlsFP, 40) + '</code> &mdash; verify in your browser (see above)' });
+        } else {
+            l3.push({ name: 'TLS fingerprint in DNS', s: 'warn', detail: 'No TLS fingerprint published in _melusina-tls or _melusina DNS' });
+        }
+
+        if (dns.release && dns.release.sha256 && dns.release.sha256 !== 'pending') {
+            l3.push({ name: 'Release hash in DNS', s: 'pass', detail: 'sha256=<code>' + short(dns.release.sha256) + '</code> v' + (dns.release.version || '?') });
+        } else {
+            l3.push({ name: 'Release hash in DNS', s: 'warn', detail: 'No release hash published' });
+        }
+
+        // Independent endpoint verification (fetch release-info from CORS-safe endpoint)
+        try {
+            var epUrl = C.RELEASE_INFO_URL(domain);
+            var epResp = await fetch(epUrl, { signal: AbortSignal.timeout(6000) });
+            if (epResp.ok) {
+                var epInfo = await epResp.json();
+                if (dns.release && dns.release.sha256) {
+                    var hashMatch = epInfo.sha256 === dns.release.sha256;
+                    l3.push({
+                        name: 'Release endpoint vs DNS',
+                        s: hashMatch ? 'pass' : 'fail',
+                        detail: hashMatch
+                            ? 'Server endpoint hash matches DNS record (anti-spoof: verified)'
+                            : '<strong style="color:#dc2626">SPOOF DETECTED:</strong> endpoint says <code>' + short(epInfo.sha256) + '</code> but DNS says <code>' + short(dns.release.sha256) + '</code>',
+                    });
+                } else {
+                    l3.push({ name: 'Release endpoint', s: 'warn', detail: 'Endpoint reachable (v' + (epInfo.version || '?') + ') but no DNS record to cross-check' });
+                }
+            }
+        } catch (e) {
+            l3.push({ name: 'Release endpoint', s: 'warn', detail: 'Endpoint unreachable (CORS or network) &mdash; relying on DNS only' });
+        }
+
+        if (dns.threshold) {
+            l3.push({ name: 'Threshold config in DNS', s: 'pass', detail: dns.threshold.m + '-of-' + dns.threshold.n });
+        } else {
+            l3.push({ name: 'Threshold config in DNS', s: 'warn', detail: 'No _melusina-threshold record' });
+        }
+
+        renderChecks('l3checks', l3);
+
+        // ── L1: Foundation ──
+        var l1 = [];
+        var masterExists = await nftExists(C.MASTER_NFT);
+        l1.push({
+            name: 'Master NFT',
+            s: masterExists ? 'pass' : 'fail',
+            detail: masterExists
+                ? '<code>' + C.MASTER_NFT + '</code> exists on ' + net
+                : '<code>' + C.MASTER_NFT + '</code> NOT found on ' + net,
+        });
+
+        if (validLicense && dns.threshold) {
+            l1.push({ name: 'Keyholder threshold', s: 'pass', detail: dns.threshold.m + '-of-' + dns.threshold.n + ' via DNS, chain verified through license' });
+        } else if (!validLicense) {
+            l1.push({ name: 'Keyholder threshold', s: 'skip', detail: 'Cannot verify &mdash; L3 (License) must pass first' });
+        } else {
+            l1.push({ name: 'Keyholder threshold', s: 'warn', detail: 'No _melusina-threshold DNS record' });
+        }
+        renderChecks('l1checks', l1);
+
+        // ── L2: Reseller ──
+        var l2 = [];
+        if (!validLicense) {
+            l2.push({ name: 'Reseller NFT', s: 'skip', detail: 'Blocked by L3 failure' });
+        } else if (resellerMint) {
+            var rExists = await nftExists(resellerMint);
+            l2.push({
+                name: 'Reseller NFT',
+                s: rExists ? 'pass' : 'fail',
+                detail: rExists
+                    ? '<code>' + resellerMint + '</code> verified on-chain'
+                    : '<code>' + resellerMint + '</code> not found',
+            });
+        } else {
+            l2.push({ name: 'Reseller NFT', s: 'skip', detail: 'Direct Foundation license (no reseller in DNS)' });
+        }
+        renderChecks('l2checks', l2);
+
+        // ── Overall status ──
+        var all = l1.concat(l2).concat(l3);
+        var fails = all.filter(function(c) { return c.s === 'fail'; }).length;
+        var passes = all.filter(function(c) { return c.s === 'pass'; }).length;
+
+        if (mismatches.length > 0) {
+            setStatus('bad', '&#x1f6a8;', 'MITM / Spoofing Detected', mismatches.length + ' field(s) disagree between server claims and independent verification');
+        } else if (fails > 0) {
+            setStatus('bad', '&#10060;', 'Verification Failed', fails + ' check(s) failed &mdash; see details below');
+        } else if (passes === all.length) {
+            var extra = pastedClaims ? ' &mdash; server claims match independent data' : '';
+            setStatus('ok', '&#x2705;', 'All Checks Passed', passes + '/' + all.length + ' verified' + extra);
+        } else {
+            setStatus('warn', '&#x26a0;&#xfe0f;', 'Partial Verification', passes + ' passed, ' + (all.length - passes) + ' warnings');
+        }
+
+        // ── Export ──
+        exportData = {
+            trustmaster_version: '3.0',
+            timestamp: new Date().toISOString(),
+            domain: domain, network: net, mode: mode,
+            independent: { dns: dns, licenseMint: licenseMint, tlsFP: tlsFP, resellerMint: resellerMint, masterExists: masterExists },
+            layers: {
+                foundation: { checks: l1, status: l1.every(function(c) { return c.s === 'pass'; }) ? 'pass' : l1.some(function(c) { return c.s === 'fail'; }) ? 'fail' : 'partial' },
+                reseller: { checks: l2, status: l2[0] ? l2[0].s : 'skip' },
+                licensee: { checks: l3, status: fails > 0 ? 'fail' : validLicense ? 'pass' : 'partial' },
+            },
+            crossCheck: pastedClaims ? { rows: crossRows, mismatches: mismatches } : null,
+            mitmDetected: mismatches.length > 0,
+        };
+        el('exportJSON').textContent = JSON.stringify(exportData, null, 2);
+
+    } catch (e) {
+        console.error(e);
+        setStatus('bad', '&#x1f4a5;', 'Error', e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '&#x1f50d; Verify';
+    }
+}
+
+function copyExport() {
+    if (exportData) navigator.clipboard.writeText(JSON.stringify(exportData, null, 2)).then(function() { alert('Copied!'); });
+}
+function dlExport() {
+    if (!exportData) return;
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' }));
+    a.download = 'trustmaster-' + exportData.domain + '-' + Date.now() + '.json';
+    a.click();
+}
+</script>
+</body>
+</html>
