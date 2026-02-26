@@ -173,14 +173,13 @@
 
         <div id="pastePanel">
             <p style="margin-bottom:10px;color:var(--muted);font-size:0.9rem;">
-                Paste the verification data copied from the &#x1f9ec; DNA button in your Sandstorm shell.
+                Paste the verification data from the &#x1f9ec; DNA button, then enter your browser&rsquo;s TLS certificate details.
                 TrustMaster will independently re-check every claim against DNS and the blockchain.
             </p>
             <textarea id="pasteInput" rows="12" placeholder="=== CONNECTION ===
 domain:            app.melusina-os.org
 url:               https://app.melusina-os.org/
 protocol:          https:
-tls_fingerprint:   HTTPS active ...
 
 === SOLANA CHAIN ===
 network:           devnet
@@ -192,6 +191,23 @@ dns_tls_fp:        da07c332...
 
 === BUILD (server-reported) ===
 ..."></textarea>
+
+            <div style="margin-top:14px;padding:16px;background:linear-gradient(135deg,#eff6ff,#dbeafe);border:2px solid #3b82f6;border-radius:12px;">
+                <h4 style="color:#1d4ed8;margin-bottom:8px;font-size:0.95rem;">&#x1f512; Your Browser&rsquo;s TLS Certificate (REQUIRED)</h4>
+                <p style="color:#4b5563;font-size:0.85rem;margin-bottom:12px;line-height:1.5;">
+                    To detect MITM attacks, paste the SHA-256 fingerprint and public key from your browser&rsquo;s certificate viewer.
+                    <strong>Without these, verification cannot complete.</strong>
+                </p>
+                <p style="color:#6b7280;font-size:0.8rem;margin-bottom:10px;">
+                    &#x1f512; Address bar &rarr; Certificate &rarr; Details &rarr; SHA-256 Fingerprint &amp; Public Key
+                </p>
+                <div class="input-group" style="margin-bottom:8px;">
+                    <input type="text" id="certFPInput" placeholder="Certificate SHA-256 fingerprint (e.g. 629a717bc6f2...)" style="font-family:monospace;font-size:0.85rem;">
+                </div>
+                <div class="input-group" style="margin-bottom:0;">
+                    <input type="text" id="certPKInput" placeholder="Public Key (e.g. 1153204438e8...)" style="font-family:monospace;font-size:0.85rem;">
+                </div>
+            </div>
         </div>
 
         <div id="domainPanel" class="hidden">
@@ -473,6 +489,13 @@ async function run() {
     if (mode === 'paste') {
         var raw = el('pasteInput').value.trim();
         if (!raw) return alert('Paste the DNA button output first.');
+
+        // Require TLS cert fields
+        var certFP = (el('certFPInput').value || '').trim().replace(/[:\s]/g, '').toLowerCase();
+        var certPK = (el('certPKInput').value || '').trim().replace(/[:\s]/g, '').toLowerCase();
+        if (!certFP || certFP.length < 32) return alert('Certificate SHA-256 fingerprint is required.\n\nClick the lock icon in your browser\'s address bar → Certificate → Details → SHA-256 Fingerprint');
+        if (!certPK || certPK.length < 32) return alert('Certificate Public Key is required.\n\nClick the lock icon in your browser\'s address bar → Certificate → Details → Public Key');
+
         pastedClaims = parseDNA(raw);
         domain = (pastedClaims.CONNECTION && (pastedClaims.CONNECTION.domain || pastedClaims.CONNECTION.Host)) || '';
         if (!domain) return alert('No domain found in pasted data. Make sure you paste the full output from the DNA button.');
@@ -600,11 +623,38 @@ async function run() {
             }
         }
 
+        // ── TLS certificate cross-check (the CRITICAL MITM detection) ──
+        if (pastedClaims) {
+            var tlsCertMatch = 'na';
+            if (certFP && tlsFP) {
+                var normalizedDnsFP = tlsFP.replace(/[:\s]/g, '').toLowerCase();
+                tlsCertMatch = (certFP === normalizedDnsFP) ? 'match' : 'mismatch';
+                if (tlsCertMatch === 'mismatch') {
+                    mismatches.push({ field: 'TLS Certificate Fingerprint', claimed: certFP, verified: normalizedDnsFP });
+                }
+                crossRows.unshift({ field: 'TLS Cert Fingerprint (YOUR browser)', claimed: certFP, verified: normalizedDnsFP, verdict: tlsCertMatch });
+            } else if (certFP && !tlsFP) {
+                crossRows.unshift({ field: 'TLS Cert Fingerprint (YOUR browser)', claimed: certFP, verified: null, verdict: 'warn' });
+            }
+            if (certPK) {
+                crossRows.splice(1, 0, { field: 'TLS Public Key (YOUR browser)', claimed: certPK, verified: null, verdict: 'warn' });
+            }
+        }
+
         // ── TLS fingerprint manual-check box ──
         if (tlsFP) {
             el('expectedFP').textContent = 'SHA-256: ' + tlsFP;
             el('tlsDomainLink').innerHTML = '<a href="https://' + esc(domain) + '/" target="_blank" rel="noopener">https://' + esc(domain) + '/</a>';
             show('tlsBox');
+            // Show match/mismatch result in the TLS box
+            if (certFP) {
+                var normalizedDnsFP = tlsFP.replace(/[:\s]/g, '').toLowerCase();
+                var matchResult = certFP === normalizedDnsFP;
+                var resultHTML = matchResult
+                    ? '<div style="margin-top:12px;padding:12px;background:#ecfdf5;border:2px solid #059669;border-radius:8px;"><strong style="color:#059669;">\u2713 MATCH</strong> — Your browser\'s certificate fingerprint matches the DNS record. No MITM detected for TLS.</div>'
+                    : '<div style="margin-top:12px;padding:12px;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;"><strong style="color:#dc2626;">\u2717 MISMATCH — POSSIBLE MITM</strong><br>Your browser sees: <code>' + esc(certFP) + '</code><br>DNS says it should be: <code>' + esc(normalizedDnsFP) + '</code><br>Someone may be intercepting your connection with a different certificate!</div>';
+                el('tlsBox').querySelector('.tls-check-box').insertAdjacentHTML('beforeend', resultHTML);
+            }
         }
 
         // ── L3: Licensee ──
