@@ -330,17 +330,37 @@ const C = {
     PROGRAM_ID: 'BSENx6t1GVPzhnnd4yiojxWk7HjKZiiRQEkriHg6Mpix',
     MASTER_NFT: '8kZ9GLytCBRyNqJjihnBsHK6c56DMjn6PAVdpegoR4bu',
     ZERO_PUBKEY: '11111111111111111111111111111111',
-    // CORS-safe release-info endpoint (served from www, bypasses Sandstorm gateway)
-    APP_EDGE_HOST: function(domain) {
-        var base = domain.replace(/^app\./, 'www.');
-        if (base === domain) base = 'www.' + domain.replace(/^www\./, '');
-        return base;
+    // Public trust artifacts may live on the zone edge for subdomain installs.
+    APP_EDGE_HOSTS: function(domain) {
+        var hosts = [];
+        var clean = String(domain || '')
+            .replace(/^https?:\/\//, '')
+            .replace(/\/.*$/, '')
+            .replace(/:\d+$/, '')
+            .replace(/^www\./, '');
+        function add(host) {
+            if (host && hosts.indexOf(host) === -1) hosts.push(host);
+        }
+        var labels = clean.split('.').filter(Boolean);
+        if (labels.length > 2) {
+            var zone = labels.slice(1).join('.');
+            add(zone);
+            add('www.' + zone);
+        }
+        add(clean);
+        add('www.' + clean);
+        return hosts;
     },
-    RELEASE_INFO_URL: function(domain) {
-        return 'https://' + C.APP_EDGE_HOST(domain) + '/melusina/release-info';
+    RELEASE_INFO_URLS: function(domain) {
+        return C.APP_EDGE_HOSTS(domain).map(function(host) {
+            return 'https://' + host + '/melusina/release-info';
+        });
     },
-    PUBLIC_TRUST_URL: function(domain, name) {
-        return 'https://' + C.APP_EDGE_HOST(domain) + '/melusina/' + name.replace(/^\/+/, '');
+    PUBLIC_TRUST_URLS: function(domain, name) {
+        var cleanName = name.replace(/^\/+/, '');
+        return C.APP_EDGE_HOSTS(domain).map(function(host) {
+            return 'https://' + host + '/melusina/' + cleanName;
+        });
     },
 };
 
@@ -392,7 +412,11 @@ async function doh(name, type) {
             });
             if (!r.ok) continue;
             var d = await r.json();
-            return (d.Answer || []).map(function(a) { return (a.data || '').replace(/^"|"$/g, ''); });
+            return (d.Answer || []).map(function(a) {
+                return (a.data || '')
+                    .replace(/^"|"$/g, '')
+                    .replace(/"\s+"/g, '');
+            });
         } catch (e) { /* try next */ }
     }
     return [];
@@ -443,8 +467,23 @@ function bytesToHex(bytes) {
     }).join('');
 }
 
+function hexToBytes(hex) {
+    var clean = (hex || '').replace(/[^0-9a-f]/gi, '');
+    var out = new Uint8Array(clean.length / 2);
+    for (var i = 0; i < clean.length; i += 2) {
+        out[i / 2] = parseInt(clean.slice(i, i + 2), 16);
+    }
+    return out;
+}
+
 function readU32LE(bytes, offset) {
     return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, true);
+}
+
+function readU64LE(bytes, offset) {
+    var lo = readU32LE(bytes, offset);
+    var hi = readU32LE(bytes, offset + 4);
+    return hi * 4294967296 + lo;
 }
 
 function readAnchorString(bytes, offset) {
@@ -490,16 +529,92 @@ async function sha256Hex(bufferLike) {
     return bytesToHex(new Uint8Array(digest));
 }
 
-async function fetchJson(url) {
-    var resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + url);
-    return resp.json();
+function looksLikeHtml(bytes, contentType) {
+    var ct = String(contentType || '').toLowerCase();
+    if (ct.indexOf('text/html') !== -1) return true;
+    try {
+        var prefix = new TextDecoder().decode(bytes.slice(0, 64)).toLowerCase();
+        return prefix.indexOf('<!doctype html') !== -1 || prefix.indexOf('<html') !== -1;
+    } catch (e) {
+        return false;
+    }
+}
+
+async function fetchJson(urls, validate) {
+    var list = Array.isArray(urls) ? urls : [urls];
+    var lastError = new Error('No JSON endpoint reachable');
+    for (var i = 0; i < list.length; i++) {
+        try {
+            var resp = await fetch(list[i], { signal: AbortSignal.timeout(6000) });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + list[i]);
+            var data = await resp.json();
+            if (validate && !validate(data)) {
+                throw new Error('Unexpected payload for ' + list[i]);
+            }
+            data.__sourceUrl = list[i];
+            return data;
+        } catch (e) {
+            lastError = e;
+        }
+    }
+    throw lastError;
 }
 
 async function fetchPublicArtifactHash(domain, name) {
-    var resp = await fetch(C.PUBLIC_TRUST_URL(domain, name), { signal: AbortSignal.timeout(6000) });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + name);
-    return sha256Hex(await resp.arrayBuffer());
+    var urls = C.PUBLIC_TRUST_URLS(domain, name);
+    var lastError = new Error('No public artifact endpoint reachable for ' + name);
+    for (var i = 0; i < urls.length; i++) {
+        try {
+            var resp = await fetch(urls[i], { signal: AbortSignal.timeout(6000) });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + urls[i]);
+            var buf = await resp.arrayBuffer();
+            var bytes = new Uint8Array(buf);
+            if (looksLikeHtml(bytes, resp.headers.get('content-type'))) {
+                throw new Error('HTML fallback for ' + urls[i]);
+            }
+            return sha256Hex(buf);
+        } catch (e) {
+            lastError = e;
+        }
+    }
+    throw lastError;
+}
+
+async function normalizeBrowserPublicKeyInput(rawValue) {
+    var raw = String(rawValue || '').trim();
+    if (!raw) return null;
+
+    var hex = raw.replace(/[:\s]/g, '').toLowerCase();
+    if (/^[0-9a-f]+$/.test(hex)) {
+        if (hex.length === 64) {
+            return { value: hex, mode: 'fingerprint' };
+        }
+        if (hex.length % 2 === 0 && hex.indexOf('30') === 0) {
+            return { value: await sha256Hex(hexToBytes(hex)), mode: 'derived-hex' };
+        }
+    }
+
+    if (/-----BEGIN [A-Z ]+-----/.test(raw)) {
+        var pem = raw.replace(/-----BEGIN [A-Z ]+-----/g, '')
+            .replace(/-----END [A-Z ]+-----/g, '')
+            .replace(/\s+/g, '');
+        try {
+            var pemBytes = base64ToBytes(pem);
+            return { value: await sha256Hex(pemBytes), mode: 'pem' };
+        } catch (e) { /* fall through */ }
+    }
+
+    var compact = raw.replace(/\s+/g, '');
+    if (/^[A-Za-z0-9+/=]+$/.test(compact) && compact.length >= 32) {
+        try {
+            var derBytes = base64ToBytes(compact);
+            if (derBytes[0] === 0x30) {
+                return { value: await sha256Hex(derBytes), mode: 'base64' };
+            }
+        } catch (e) { /* fall through */ }
+    }
+
+    return null;
 }
 
 async function getLicenseEntry(licenseMint) {
@@ -534,6 +649,8 @@ async function getLicenseEntry(licenseMint) {
     var unlockThreshold = bytes[off++],
         totalKeyholders = bytes[off++],
         activeKeyholders = bytes[off++];
+    var owner = base58Encode(bytes.slice(off, off + 32)); off += 32;
+    var custodyMode = bytes[off++];
 
     return {
         pda: entry.pubkey,
@@ -546,6 +663,55 @@ async function getLicenseEntry(licenseMint) {
         unlockThreshold: unlockThreshold,
         totalKeyholders: totalKeyholders,
         activeKeyholders: activeKeyholders,
+        owner: owner,
+        custodyMode: custodyMode,
+    };
+}
+
+async function getRegistryEntry(masterMint) {
+    if (!masterMint) return null;
+
+    var result = await rpc('getProgramAccounts', [C.PROGRAM_ID, {
+        encoding: 'base64',
+        filters: [
+            { memcmp: { offset: 0, bytes: 'hd3UzQafZ9K' } },
+            { memcmp: { offset: 40, bytes: masterMint } },
+        ],
+    }]);
+
+    if (!result || !result.length) return null;
+
+    var entry = result[0];
+    var data = entry.account && entry.account.data && entry.account.data[0];
+    if (!data) return null;
+
+    var bytes = base64ToBytes(data);
+    var off = 8;
+    var authority = base58Encode(bytes.slice(off, off + 32)); off += 32;
+    var storedMasterMint = base58Encode(bytes.slice(off, off + 32)); off += 32;
+    var totalLicenses = readU64LE(bytes, off); off += 8;
+    var activeLicenses = readU64LE(bytes, off); off += 8;
+    var totalResellers = readU32LE(bytes, off); off += 4;
+    var activeResellers = readU32LE(bytes, off); off += 4;
+    var totalShares = readU64LE(bytes, off); off += 8;
+    var totalKeyholders = readU32LE(bytes, off); off += 4;
+    var activeKeyholders = readU32LE(bytes, off); off += 4;
+    var totalReleases = readU32LE(bytes, off); off += 4;
+    var bump = bytes[off++];
+
+    return {
+        pda: entry.pubkey,
+        authority: authority,
+        masterMint: storedMasterMint,
+        totalLicenses: totalLicenses,
+        activeLicenses: activeLicenses,
+        totalResellers: totalResellers,
+        activeResellers: activeResellers,
+        totalShares: totalShares,
+        totalKeyholders: totalKeyholders,
+        activeKeyholders: activeKeyholders,
+        totalReleases: totalReleases,
+        bump: bump,
     };
 }
 
@@ -624,9 +790,9 @@ async function run() {
 
         // Require TLS cert fields
         var certFP = (el('certFPInput').value || '').trim().replace(/[:\s]/g, '').toLowerCase();
-        var certPK = (el('certPKInput').value || '').trim().replace(/[:\s]/g, '').toLowerCase();
+        var certPKInput = (el('certPKInput').value || '').trim();
         if (!certFP || certFP.length < 32) return alert('Certificate SHA-256 fingerprint is required.\n\nClick the lock icon in your browser\'s address bar → Certificate → Details → SHA-256 Fingerprint');
-        if (!certPK || certPK.length < 32) return alert('Certificate Public Key is required.\n\nClick the lock icon in your browser\'s address bar → Certificate → Details → Public Key');
+        if (!certPKInput || certPKInput.length < 16) return alert('Certificate Public Key is required.\n\nClick the lock icon in your browser\'s address bar → Certificate → Details → Public Key');
 
         pastedClaims = parseDNA(raw);
         domain = (pastedClaims.CONNECTION && (pastedClaims.CONNECTION.domain || pastedClaims.CONNECTION.Host)) || '';
@@ -690,16 +856,29 @@ async function run() {
         var dnsNetwork = dns.melusina ? (dns.melusina.network || null) : null;
         var releaseInfo = null;
         var licenseEntry = null;
+        var registryEntry = null;
         var publicTrust = { csr: null, provenance: null, ca: null };
 
         try {
-            releaseInfo = await fetchJson(C.RELEASE_INFO_URL(domain));
+            releaseInfo = await fetchJson(C.RELEASE_INFO_URLS(domain), function(data) {
+                return data && typeof data === 'object' && data.sha256 && data.version;
+            });
         } catch (e) { /* endpoint optional */ }
 
         if (licenseMint && licenseMint !== 'pending') {
             try {
                 licenseEntry = await getLicenseEntry(licenseMint);
             } catch (e) { /* chain decode optional */ }
+        }
+
+        if (!resellerMint && licenseEntry && licenseEntry.resellerMint) {
+            resellerMint = licenseEntry.resellerMint;
+        }
+
+        if (licenseEntry && licenseEntry.masterMint) {
+            try {
+                registryEntry = await getRegistryEntry(licenseEntry.masterMint);
+            } catch (e) { /* registry decode optional */ }
         }
 
         if (dns.tls && (dns.tls.csr || dns.tls.provenance || dns.tls.ca)) {
@@ -728,6 +907,7 @@ async function run() {
             var sc = pc['SOLANA CHAIN'] || {};
             var dr = pc['DNS RECORDS'] || {};
             var bu = pc['BUILD (server-reported)'] || {};
+            var certPK = await normalizeBrowserPublicKeyInput(certPKInput);
 
             var claimed_license = sc.license_nft;
             var claimed_network = sc.network;
@@ -743,7 +923,7 @@ async function run() {
             var claimed_version = bu.release_version;
             var claimed_hash = bu.release_hash;
 
-            function cmp(field, claimed, verified, critical) {
+            function cmp(field, claimed, verified, critical, optional) {
                 var cl = claimed && claimed !== '(not found)' ? claimed : null;
                 var vr = verified || null;
                 var verdict = 'na';
@@ -753,7 +933,7 @@ async function run() {
                 } else if (cl && !vr) {
                     verdict = 'warn';
                 } else if (!cl && vr) {
-                    verdict = 'warn';
+                    verdict = optional ? 'na' : 'warn';
                 }
                 crossRows.push({ field: field, claimed: cl, verified: vr, verdict: verdict });
             }
@@ -762,7 +942,7 @@ async function run() {
             cmp('Network', claimed_network, dnsNetwork, true);
             cmp('Program ID', claimed_program, chainProgramId || C.PROGRAM_ID, true);
             cmp('Master NFT', claimed_master, chainMasterMint || C.MASTER_NFT, true);
-            cmp('Reseller NFT', claimed_reseller, chainResellerMint || resellerMint, false);
+            cmp('Reseller NFT', claimed_reseller, chainResellerMint || resellerMint, false, true);
             cmp('TLS Fingerprint (DNS)', claimed_dns_tls, tlsFP, true);
             cmp('TLS Public Key Fingerprint (DNS)', claimed_dns_spki, tlsSpki, true);
 
@@ -826,7 +1006,14 @@ async function run() {
                 crossRows.unshift({ field: 'TLS Cert Fingerprint (YOUR browser)', claimed: certFP, verified: null, verdict: 'warn' });
             }
             if (certPK) {
-                crossRows.splice(1, 0, { field: 'TLS Public Key (YOUR browser)', claimed: certPK, verified: null, verdict: 'warn' });
+                crossRows.splice(1, 0, {
+                    field: 'TLS Public Key (YOUR browser)',
+                    claimed: certPK.value,
+                    verified: tlsSpki,
+                    verdict: tlsSpki && certPK.value === tlsSpki ? 'match' : 'warn',
+                });
+            } else if (certPKInput) {
+                crossRows.splice(1, 0, { field: 'TLS Public Key (YOUR browser)', claimed: certPKInput, verified: null, verdict: 'na' });
             }
             renderCrossCheck(crossRows);
         }
@@ -890,7 +1077,8 @@ async function run() {
             l3.push({ name: 'TLS fingerprint in DNS', s: 'warn', detail: 'No TLS fingerprint published in _melusina-tls or _melusina DNS' });
         }
 
-        if (tlsSpki && chainTlsSpki) {
+        var chainTlsBindingPublished = !!(chainTlsSpki && !/^0+$/.test(chainTlsSpki));
+        if (tlsSpki && chainTlsBindingPublished) {
             var spkiMatchesChain = tlsSpki === chainTlsSpki;
             l3.push({
                 name: 'TLS public key binding',
@@ -898,6 +1086,15 @@ async function run() {
                 detail: spkiMatchesChain
                     ? 'DNS SPKI matches the on-chain license binding'
                     : 'DNS SPKI <code>' + short(tlsSpki, 24) + '</code> disagrees with on-chain <code>' + short(chainTlsSpki, 24) + '</code>',
+            });
+        } else if (tlsSpki && chainTlsSpki && /^0+$/.test(chainTlsSpki)) {
+            var custodyHint = licenseEntry && licenseEntry.custodyMode === 1
+                ? ' (license is Squads-custodied, so this needs the vault/multisig owner)'
+                : '';
+            l3.push({
+                name: 'TLS public key binding',
+                s: 'skip',
+                detail: 'DNS SPKI is published, but this license has no on-chain TLS binding yet' + custodyHint,
             });
         } else if (tlsSpki || chainTlsSpki) {
             l3.push({ name: 'TLS public key binding', s: 'warn', detail: 'Need both DNS SPKI and on-chain license binding to compare TLS public key' });
@@ -927,15 +1124,16 @@ async function run() {
         }
 
         if (dns.threshold && licenseEntry) {
+            var chainThresholdN = registryEntry ? registryEntry.totalKeyholders : licenseEntry.totalKeyholders;
             var dnsThresholdMatchesChain = String(dns.threshold.m) === String(licenseEntry.unlockThreshold) &&
-                String(dns.threshold.n) === String(licenseEntry.totalKeyholders);
+                String(dns.threshold.n) === String(chainThresholdN);
             l3.push({
                 name: 'Threshold config in DNS',
                 s: dnsThresholdMatchesChain ? 'pass' : 'fail',
                 detail: dnsThresholdMatchesChain
                     ? dns.threshold.m + '-of-' + dns.threshold.n
                     : 'DNS says ' + dns.threshold.m + '-of-' + dns.threshold.n +
-                        ' but chain says ' + licenseEntry.unlockThreshold + '-of-' + licenseEntry.totalKeyholders,
+                        ' but chain says ' + licenseEntry.unlockThreshold + '-of-' + chainThresholdN,
             });
         } else if (dns.threshold) {
             l3.push({ name: 'Threshold config in DNS', s: 'pass', detail: dns.threshold.m + '-of-' + dns.threshold.n });
@@ -991,7 +1189,7 @@ async function run() {
         } else {
             l3.push({
                 name: 'DNS Zone Integrity (_melusina-dns-auth)',
-                s: 'warn',
+                s: 'skip',
                 detail: 'No <code>_melusina-dns-auth</code> TXT record found &mdash; zone not Squads-signed',
             });
         }
@@ -1019,7 +1217,10 @@ async function run() {
         }
 
         if (validLicense && dns.threshold) {
-            l1.push({ name: 'Keyholder threshold', s: 'pass', detail: dns.threshold.m + '-of-' + dns.threshold.n + ' via DNS, chain verified through license' });
+            var activeKeyholderText = registryEntry
+                ? ' &middot; active=' + registryEntry.activeKeyholders + '/' + registryEntry.totalKeyholders
+                : '';
+            l1.push({ name: 'Keyholder threshold', s: 'pass', detail: dns.threshold.m + '-of-' + dns.threshold.n + ' via DNS, chain verified through registry/license' + activeKeyholderText });
         } else if (!validLicense) {
             l1.push({ name: 'Keyholder threshold', s: 'skip', detail: 'Cannot verify &mdash; L3 (License) must pass first' });
         } else {
@@ -1049,16 +1250,22 @@ async function run() {
         var all = l1.concat(l2).concat(l3);
         var fails = all.filter(function(c) { return c.s === 'fail'; }).length;
         var passes = all.filter(function(c) { return c.s === 'pass'; }).length;
+        var warns = all.filter(function(c) { return c.s === 'warn'; }).length;
+        var skips = all.filter(function(c) { return c.s === 'skip'; }).length;
 
         if (mismatches.length > 0) {
             setStatus('bad', '&#x1f6a8;', 'MITM / Spoofing Detected', mismatches.length + ' field(s) disagree between server claims and independent verification');
         } else if (fails > 0) {
             setStatus('bad', '&#10060;', 'Verification Failed', fails + ' check(s) failed &mdash; see details below');
-        } else if (passes === all.length) {
+        } else if (warns === 0 && skips === 0) {
             var extra = pastedClaims ? ' &mdash; server claims match independent data' : '';
             setStatus('ok', '&#x2705;', 'All Checks Passed', passes + '/' + all.length + ' verified' + extra);
+        } else if (warns === 0) {
+            var note = skips > 0 ? ' &mdash; ' + skips + ' optional check(s) skipped' : '';
+            var extra = pastedClaims ? ' &mdash; server claims match independent data' : '';
+            setStatus('ok', '&#x2705;', 'All Required Checks Passed', passes + '/' + all.length + ' verified' + note + extra);
         } else {
-            setStatus('warn', '&#x26a0;&#xfe0f;', 'Partial Verification', passes + ' passed, ' + (all.length - passes) + ' warnings');
+            setStatus('warn', '&#x26a0;&#xfe0f;', 'Partial Verification', passes + ' passed, ' + warns + ' warning(s), ' + skips + ' optional check(s) skipped');
         }
 
         // ── Export ──
@@ -1072,10 +1279,11 @@ async function run() {
                 tlsFP: tlsFP,
                 tlsSpki: tlsSpki,
                 resellerMint: chainResellerMint || resellerMint,
-                licenseEntry: licenseEntry,
-                releaseInfo: releaseInfo,
-                publicTrust: publicTrust,
-                masterExists: masterExists,
+            licenseEntry: licenseEntry,
+            registryEntry: registryEntry,
+            releaseInfo: releaseInfo,
+            publicTrust: publicTrust,
+            masterExists: masterExists,
             },
             layers: {
                 foundation: { checks: l1, status: l1.every(function(c) { return c.s === 'pass'; }) ? 'pass' : l1.some(function(c) { return c.s === 'fail'; }) ? 'fail' : 'partial' },
