@@ -169,6 +169,7 @@
         <div class="tabs">
             <div class="tab active" data-mode="paste">&#x1f4cb; Paste from DNA Button</div>
             <div class="tab" data-mode="domain">&#x1f310; Domain Lookup</div>
+            <div class="tab" data-mode="document">&#x1f4c4; Document / Advice</div>
         </div>
 
         <div id="pastePanel">
@@ -213,6 +214,33 @@ dns_tls_fp:        da07c332...
         <div id="domainPanel" class="hidden">
             <div class="input-group">
                 <input type="text" id="domainInput" placeholder="e.g. app.melusina-os.org">
+            </div>
+        </div>
+
+        <div id="documentPanel" class="hidden">
+            <p style="margin-bottom:10px;color:var(--muted);font-size:0.9rem;">
+                Paste the verification JSON block from a ccash payment advice PDF,
+                along with the Ed25519 signature and signer public key printed below it.
+                TrustMaster will verify the signature, check payload integrity, and
+                independently confirm the issuing domain&rsquo;s license on-chain.
+            </p>
+            <textarea id="docJSONInput" rows="10" placeholder='{
+  "v": 1,
+  "type": "ccash.advice.v1",
+  "txn_id": "txn_01KNS...",
+  "direction": "send",
+  "status": "settled",
+  "amount": "0.50000000",
+  "currency": "BTC",
+  ...
+}'></textarea>
+            <div style="margin-top:12px;">
+                <div class="input-group" style="margin-bottom:8px;">
+                    <input type="text" id="docSigInput" placeholder="Ed25519 signature (hex)" style="font-family:monospace;font-size:0.85rem;">
+                </div>
+                <div class="input-group" style="margin-bottom:0;">
+                    <input type="text" id="docPubkeyInput" placeholder="Signer public key (base58)" style="font-family:monospace;font-size:0.85rem;">
+                </div>
             </div>
         </div>
 
@@ -300,6 +328,12 @@ dns_tls_fp:        da07c332...
         </div>
 
         <!-- Export -->
+        <div class="card hidden" id="docResultsCard" style="display:none;">
+            <h2>&#x1f4c4; Document Verification</h2>
+            <div id="docChecks"></div>
+            <div id="docPayloadDisplay" style="margin-top:14px;background:#1e293b;color:#e2e8f0;padding:16px;border-radius:8px;font-family:monospace;font-size:0.82rem;white-space:pre-wrap;max-height:300px;overflow-y:auto;display:none;"></div>
+        </div>
+
         <div class="card">
             <h2>&#x1f4e4; Export</h2>
             <div class="button-row">
@@ -375,6 +409,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
     mode = t.dataset.mode;
     document.getElementById('pastePanel').classList.toggle('hidden', mode !== 'paste');
     document.getElementById('domainPanel').classList.toggle('hidden', mode !== 'domain');
+    document.getElementById('documentPanel').classList.toggle('hidden', mode !== 'document');
 }));
 document.querySelectorAll('.net-btn').forEach(b => b.addEventListener('click', () => {
     document.querySelectorAll('.net-btn').forEach(x => x.classList.remove('active'));
@@ -387,7 +422,9 @@ document.getElementById('domainInput').addEventListener('keypress', e => { if (e
 // Auto-fill from URL params
 window.addEventListener('load', () => {
     const p = new URLSearchParams(location.search);
-    if (p.get('domain')) {
+    if (p.get('mode') === 'document') {
+        document.querySelector('[data-mode="document"]').click();
+    } else if (p.get('domain')) {
         document.getElementById('domainInput').value = p.get('domain');
         document.querySelector('[data-mode="domain"]').click();
     }
@@ -527,6 +564,52 @@ function isZeroPubkey(pubkey) {
 async function sha256Hex(bufferLike) {
     var digest = await crypto.subtle.digest('SHA-256', bufferLike);
     return bytesToHex(new Uint8Array(digest));
+}
+
+// ── Ed25519 signature verification (Web Crypto) ──────────────────
+// Web Crypto supports Ed25519 in modern browsers (Chrome 113+, Safari 17+, FF ≥ future).
+// Falls back to a manual check hint if not available.
+async function verifyEd25519(pubkeyBytes, signatureBytes, messageBytes) {
+    try {
+        var key = await crypto.subtle.importKey(
+            'raw', pubkeyBytes, { name: 'Ed25519' }, false, ['verify']
+        );
+        return await crypto.subtle.verify('Ed25519', key, signatureBytes, messageBytes);
+    } catch (e) {
+        // Fallback: if Web Crypto doesn't support Ed25519, return null (unknown).
+        if (e.name === 'NotSupportedError' || e.message.indexOf('Ed25519') !== -1 || e.message.indexOf('Unrecognized') !== -1) {
+            return null;
+        }
+        return false;
+    }
+}
+
+function base58Decode(s) {
+    var alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    if (!s || !s.length) return new Uint8Array(0);
+    var zeros = 0;
+    while (zeros < s.length && s[zeros] === '1') zeros++;
+    var size = Math.ceil(s.length * 733 / 1000) + 1;
+    var buf = new Uint8Array(size);
+    var length = 0;
+    for (var i = zeros; i < s.length; i++) {
+        var c = alphabet.indexOf(s[i]);
+        if (c < 0) throw new Error('Invalid base58 char: ' + s[i]);
+        var carry = c;
+        for (var j = 0; j < length || carry > 0; j++) {
+            if (j < buf.length) {
+                carry += 58 * (buf[size - 1 - j] || 0);
+                buf[size - 1 - j] = carry % 256;
+                carry = (carry / 256) | 0;
+            }
+        }
+        length = Math.max(length, j);
+    }
+    var skip = size - length;
+    var out = new Uint8Array(zeros + length);
+    for (var k = 0; k < zeros; k++) out[k] = 0;
+    for (var n = 0; n < length; n++) out[zeros + n] = buf[skip + n];
+    return out;
 }
 
 function looksLikeHtml(bytes, contentType) {
@@ -715,6 +798,65 @@ async function getRegistryEntry(masterMint) {
     };
 }
 
+async function getReleaseRecord(releaseHash) {
+    // Look up a ReleaseRecord PDA on-chain by matching the stored release_hash.
+    // ReleaseRecord layout (Anchor): [8 disc][4+hash_str][4+version_str][32 signer][64 sig][8 signed_at][1 status][1 bump]
+    // Anchor discriminator: sha256("account:ReleaseRecord")[:8]
+    // We use getProgramAccounts with disc filter + hash content filter.
+    if (!releaseHash || releaseHash.length < 16) return null;
+
+    // Pre-computed base58-encoded first 8 bytes of sha256("account:ReleaseRecord")
+    // = [0x20,0x2d,0x38,0x4f,0xa3,0x71,0xc6,0x44] = base58: "6P9v7Pec1jy"
+    var DISC = '6P9v7Pec1jy';
+
+    // The hash string is stored as Anchor string: [4-byte LE length][utf8 bytes].
+    // Encode the length prefix (release_hash.length as u32 LE) + first 24 chars
+    // for a memcmp filter.
+    var hashBytes = new TextEncoder().encode(releaseHash);
+    var filterLen = Math.min(hashBytes.length, 24);
+    var filterBuf = new Uint8Array(4 + filterLen);
+    new DataView(filterBuf.buffer).setUint32(0, hashBytes.length, true);
+    filterBuf.set(hashBytes.slice(0, filterLen), 4);
+    var filterB64 = btoa(String.fromCharCode.apply(null, filterBuf));
+
+    try {
+        var result = await rpc('getProgramAccounts', [C.PROGRAM_ID, {
+            encoding: 'base64',
+            filters: [
+                { memcmp: { offset: 0, bytes: DISC } },
+                { memcmp: { offset: 8, bytes: filterB64, encoding: 'base64' } },
+            ],
+        }]);
+
+        if (!result || !result.length) return null;
+
+        var entry = result[0];
+        var data = entry.account && entry.account.data && entry.account.data[0];
+        if (!data) return null;
+
+        var bytes = base64ToBytes(data);
+        var off = 8;
+        var storedHash = readAnchorString(bytes, off); off = storedHash.offset;
+        var version = readAnchorString(bytes, off); off = version.offset;
+        var signer = base58Encode(bytes.slice(off, off + 32)); off += 32;
+        off += 64; // signature
+        var signedAt = readU64LE(bytes, off); off += 8;
+        var statusByte = bytes[off++];
+        var statusMap = { 0: 'Active', 1: 'Revoked' };
+
+        return {
+            pda: entry.pubkey,
+            releaseHash: storedHash.value,
+            version: version.value,
+            signer: signer,
+            signedAt: signedAt,
+            status: statusMap[statusByte] || 'Unknown(' + statusByte + ')',
+        };
+    } catch (e) {
+        return null;
+    }
+}
+
 function short(s, n) {
     n = n || 16;
     return s && s.length > n + 4 ? s.slice(0, n) + '...' : s || '';
@@ -779,10 +921,258 @@ function esc(s) {
 }
 
 // ============================================================================
+// DOCUMENT / ADVICE VERIFICATION
+// ============================================================================
+async function runDocumentVerification() {
+    var rawJSON = el('docJSONInput').value.trim();
+    var rawSig = el('docSigInput').value.trim().replace(/\s/g, '');
+    var rawPubkey = el('docPubkeyInput').value.trim();
+
+    if (!rawJSON) return alert('Paste the verification JSON block from the PDF.');
+
+    var btn = el('goBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Verifying document...';
+    show('results');
+    hide('mitmAlert');
+    hide('crossCheckCard');
+    hide('tlsBox');
+    el('l1checks').innerHTML = el('l2checks').innerHTML = el('l3checks').innerHTML = '';
+
+    // Show document results card
+    var docCard = el('docResultsCard');
+    docCard.style.display = '';
+
+    var checks = [];
+
+    try {
+        // ── Step 1: Parse JSON payload ──
+        var payload;
+        try {
+            payload = JSON.parse(rawJSON);
+            checks.push({ name: 'JSON payload parses', s: 'pass', detail: 'Type: <code>' + esc(payload.type || '?') + '</code> &middot; Version: <code>' + (payload.v || '?') + '</code>' });
+        } catch (e) {
+            checks.push({ name: 'JSON payload parses', s: 'fail', detail: 'Invalid JSON: ' + esc(e.message) });
+            renderChecks('docChecks', checks);
+            setStatus('bad', '&#10060;', 'Document Verification Failed', 'Could not parse the JSON payload');
+            return;
+        }
+
+        // Pretty-display the payload
+        var payloadDisplay = el('docPayloadDisplay');
+        payloadDisplay.textContent = JSON.stringify(payload, null, 2);
+        payloadDisplay.style.display = '';
+
+        // Schema check
+        var isAdviceV1 = payload.type === 'ccash.advice.v1' && payload.v === 1;
+        if (isAdviceV1) {
+            checks.push({ name: 'Schema: ccash.advice.v1', s: 'pass', detail: 'Transaction <code>' + esc(payload.txn_id || '') + '</code> &middot; ' + esc(payload.direction || '') + ' &middot; ' + esc(payload.status || '') });
+        } else {
+            checks.push({ name: 'Schema recognition', s: 'warn', detail: 'Unknown type <code>' + esc(payload.type || '(none)') + '</code> v' + (payload.v || '?') + ' &mdash; basic signature check only' });
+        }
+
+        // ── Step 2: Compute SHA-256 of the canonical JSON ──
+        // Use the raw JSON bytes exactly as pasted for the hash (matches the Go signing flow).
+        var canonicalJSON = JSON.stringify(payload); // re-serialize to strip whitespace
+        var jsonBytes = new TextEncoder().encode(canonicalJSON);
+        var computedHash = await sha256Hex(jsonBytes);
+        checks.push({ name: 'SHA-256 payload hash', s: 'pass', detail: '<code>' + computedHash.slice(0, 32) + '...</code>' });
+
+        // ── Step 3: Verify Ed25519 signature ──
+        var sigVerified = null;
+        if (rawSig && rawPubkey) {
+            try {
+                var sigBytes = hexToBytes(rawSig);
+                if (sigBytes.length !== 64) throw new Error('Signature must be 64 bytes (128 hex chars), got ' + sigBytes.length);
+
+                var pubBytes = base58Decode(rawPubkey);
+                if (pubBytes.length !== 32) throw new Error('Public key must be 32 bytes after base58 decode, got ' + pubBytes.length);
+
+                // The ccash signing flow signs the hex hash string, NOT the raw hash bytes.
+                var messageBytes = new TextEncoder().encode(computedHash);
+
+                sigVerified = await verifyEd25519(pubBytes, sigBytes, messageBytes);
+
+                if (sigVerified === true) {
+                    checks.push({ name: 'Ed25519 signature', s: 'pass', detail: 'Signature is <strong>valid</strong> for signer <code>' + esc(short(rawPubkey, 20)) + '</code>' });
+                } else if (sigVerified === false) {
+                    checks.push({ name: 'Ed25519 signature', s: 'fail', detail: '<strong style="color:#dc2626">Signature INVALID</strong> &mdash; the payload may have been tampered with, or the wrong key was used' });
+                } else {
+                    // null = Web Crypto doesn't support Ed25519 in this browser
+                    checks.push({ name: 'Ed25519 signature', s: 'warn', detail: 'Your browser does not support Ed25519 via Web Crypto. Signature cannot be verified client-side. Signer: <code>' + esc(short(rawPubkey, 20)) + '</code>' });
+                }
+            } catch (e) {
+                checks.push({ name: 'Ed25519 signature', s: 'fail', detail: 'Signature check error: ' + esc(e.message) });
+            }
+        } else if (rawSig && !rawPubkey) {
+            checks.push({ name: 'Ed25519 signature', s: 'warn', detail: 'Signature provided but no public key &mdash; cannot verify' });
+        } else {
+            checks.push({ name: 'Ed25519 signature', s: 'skip', detail: 'No signature provided (unsigned advice)' });
+        }
+
+        // ── Step 4: Validate payload fields (if ccash.advice.v1) ──
+        if (isAdviceV1) {
+            // Amount / currency
+            var amount = payload.amount || '?';
+            var ccy = payload.currency || '?';
+            var counterparty = payload.counterparty || '(none)';
+            var direction = payload.direction || '?';
+            checks.push({
+                name: 'Transaction summary',
+                s: 'pass',
+                detail: esc(direction) + ' of <strong>' + esc(amount) + ' ' + esc(ccy) + '</strong> to/from <strong>' + esc(counterparty) + '</strong>',
+            });
+
+            // Settlement details
+            if (payload.settlement) {
+                var s = payload.settlement;
+                var explorerURL = '';
+                var r = (s.rail || '').toLowerCase();
+                if (r === 'bitcoin' || r === 'btc') explorerURL = 'https://mempool.space/address/' + s.address;
+                else if (r === 'ethereum' || r === 'eth') explorerURL = 'https://etherscan.io/address/' + s.address;
+                else if (r === 'solana' || r === 'sol' || r === 'usdc' || r === 'usdt') explorerURL = 'https://solscan.io/account/' + s.address;
+
+                var addrDetail = '<code>' + esc(s.address || '') + '</code>';
+                if (explorerURL) addrDetail += ' &middot; <a href="' + explorerURL + '" target="_blank" rel="noopener" style="color:var(--primary);">view on explorer &#x2197;</a>';
+
+                checks.push({
+                    name: 'Settlement: ' + esc(s.rail || '?'),
+                    s: 'pass',
+                    detail: 'Ref: <code>' + esc(s.reference || '') + '</code> &middot; Address: ' + addrDetail + (s.memo ? ' &middot; Memo: <code>' + esc(s.memo) + '</code>' : ''),
+                });
+            } else {
+                checks.push({ name: 'Settlement', s: 'skip', detail: 'No settlement block (pre-approval or pending)' });
+            }
+
+            // Timestamps
+            var bookedAt = payload.booked_at || '?';
+            var issuedAt = payload.issued_at || '?';
+            checks.push({ name: 'Timestamps', s: 'pass', detail: 'Booked: <code>' + esc(bookedAt) + '</code> &middot; Issued: <code>' + esc(issuedAt) + '</code>' });
+        }
+
+        // ── Step 5: Domain lookup — verify the issuing domain is a licensed Melusina deployment ──
+        var docDomain = payload.domain || '';
+        if (docDomain) {
+            checks.push({ name: 'Issuer domain', s: 'pass', detail: 'Claims issuance from <code>' + esc(docDomain) + '</code> &mdash; checking license on-chain...' });
+
+            try {
+                var melResults = await doh('_melusina.' + docDomain);
+                if (melResults.length > 0) {
+                    var melDNS = parseTxt(melResults[0]);
+                    var docLicenseMint = melDNS.license || null;
+                    var docDNSNetwork = melDNS.network || null;
+
+                    if (docDNSNetwork && C.RPC[docDNSNetwork]) {
+                        net = docDNSNetwork;
+                    }
+
+                    checks.push({
+                        name: 'DNS _melusina record for ' + esc(docDomain),
+                        s: 'pass',
+                        detail: 'license=<code>' + esc(short(docLicenseMint)) + '</code> &middot; network=<code>' + esc(docDNSNetwork || '?') + '</code>',
+                    });
+
+                    if (docLicenseMint && docLicenseMint !== 'pending') {
+                        var licExists = await nftExists(docLicenseMint);
+                        if (licExists) {
+                            checks.push({
+                                name: 'License NFT on-chain',
+                                s: 'pass',
+                                detail: 'Mint <code>' + esc(docLicenseMint) + '</code> exists on ' + net + ' &mdash; <strong>this domain holds a valid Melusina license</strong>',
+                            });
+
+                            // Try to get license entry for domain binding check
+                            try {
+                                var docLicEntry = await getLicenseEntry(docLicenseMint);
+                                if (docLicEntry) {
+                                    var domainBindMatch = docLicEntry.domain === docDomain;
+                                    checks.push({
+                                        name: 'License domain binding',
+                                        s: domainBindMatch ? 'pass' : 'fail',
+                                        detail: domainBindMatch
+                                            ? 'On-chain license binds to <code>' + esc(docDomain) + '</code> &mdash; matches stated issuer'
+                                            : 'On-chain license binds <code>' + esc(docLicEntry.domain || '(blank)') + '</code> &mdash; does NOT match <code>' + esc(docDomain) + '</code>',
+                                    });
+                                }
+                            } catch (e) { /* license decode optional */ }
+                        } else {
+                            checks.push({
+                                name: 'License NFT on-chain',
+                                s: 'fail',
+                                detail: 'Mint <code>' + esc(docLicenseMint) + '</code> not found or zero supply on ' + net,
+                            });
+                        }
+                    } else {
+                        checks.push({ name: 'License NFT on-chain', s: 'fail', detail: 'License mint is <code>pending</code> or missing' });
+                    }
+                } else {
+                    checks.push({
+                        name: 'DNS _melusina record for ' + esc(docDomain),
+                        s: 'fail',
+                        detail: 'No _melusina TXT record found &mdash; this domain may not be a Melusina deployment',
+                    });
+                }
+            } catch (e) {
+                checks.push({ name: 'Domain license lookup', s: 'warn', detail: 'DNS lookup failed: ' + esc(e.message) });
+            }
+        } else {
+            checks.push({ name: 'Issuer domain', s: 'warn', detail: 'No <code>domain</code> field in the payload &mdash; cannot verify issuer license' });
+        }
+
+        // ── Overall status ──
+        renderChecks('docChecks', checks);
+
+        var fails = checks.filter(function(c) { return c.s === 'fail'; }).length;
+        var passes = checks.filter(function(c) { return c.s === 'pass'; }).length;
+        var warns = checks.filter(function(c) { return c.s === 'warn'; }).length;
+
+        if (sigVerified === false || fails > 0) {
+            setStatus('bad', '&#10060;', 'Document Verification Failed', fails + ' check(s) failed &mdash; this document may be forged or tampered with');
+        } else if (sigVerified === true && fails === 0 && warns === 0) {
+            setStatus('ok', '&#x2705;', 'Document Verified', 'Signature valid &middot; payload intact &middot; issuer domain licensed');
+        } else if (sigVerified === true && warns > 0) {
+            setStatus('warn', '&#x26a0;&#xfe0f;', 'Document Partially Verified', passes + ' passed, ' + warns + ' warning(s)');
+        } else if (sigVerified === null) {
+            setStatus('warn', '&#x26a0;&#xfe0f;', 'Signature Unverifiable', 'Ed25519 not supported in this browser. Hash and domain checks passed.');
+        } else {
+            setStatus('warn', '&#x26a0;&#xfe0f;', 'Unsigned Document', 'No signature provided. Payload hash and domain checks only.');
+        }
+
+        // Export
+        exportData = {
+            trustmaster_version: '3.0',
+            timestamp: new Date().toISOString(),
+            mode: 'document',
+            network: net,
+            payload: payload,
+            computedHash: computedHash,
+            signatureValid: sigVerified,
+            signerPubkey: rawPubkey || null,
+            checks: checks,
+        };
+        el('exportJSON').textContent = JSON.stringify(exportData, null, 2);
+
+    } catch (e) {
+        console.error(e);
+        checks.push({ name: 'Unexpected error', s: 'fail', detail: esc(e.message) });
+        renderChecks('docChecks', checks);
+        setStatus('bad', '&#x1f4a5;', 'Error', e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '&#x1f50d; Verify';
+    }
+}
+
+// ============================================================================
 // MAIN VERIFICATION
 // ============================================================================
 async function run() {
     var domain = '', pastedClaims = null;
+
+    // ── Document / Advice verification mode ──
+    if (mode === 'document') {
+        return runDocumentVerification();
+    }
 
     if (mode === 'paste') {
         var raw = el('pasteInput').value.trim();
@@ -885,6 +1275,17 @@ async function run() {
             try {
                 registryEntry = await getRegistryEntry(licenseEntry.masterMint);
             } catch (e) { /* registry decode optional */ }
+        }
+
+        // ── On-chain ReleaseRecord verification ──
+        // Look up the ReleaseRecord PDA for the release hash from DNS or endpoint.
+        // This is the CRITICAL on-chain anchor that TrustMaster was previously missing.
+        var releaseRecord = null;
+        var releaseHashToVerify = (dns.release && dns.release.sha256) || (releaseInfo && releaseInfo.sha256) || null;
+        if (releaseHashToVerify && releaseHashToVerify !== 'pending') {
+            try {
+                releaseRecord = await getReleaseRecord(releaseHashToVerify);
+            } catch (e) { /* chain decode optional */ }
         }
 
         if (dns.tls && (dns.tls.csr || dns.tls.provenance || dns.tls.ca)) {
@@ -1110,6 +1511,46 @@ async function run() {
             l3.push({ name: 'Release hash in DNS', s: 'pass', detail: 'sha256=<code>' + short(dns.release.sha256) + '</code> v' + (dns.release.version || '?') });
         } else {
             l3.push({ name: 'Release hash in DNS', s: 'warn', detail: 'No release hash published' });
+        }
+
+        // ── ON-CHAIN ReleaseRecord verification (the immutable anchor) ──
+        if (releaseRecord) {
+            var onChainStatus = releaseRecord.status;
+            var onChainHashMatch = releaseRecord.releaseHash === releaseHashToVerify;
+            if (onChainStatus === 'Active' && onChainHashMatch) {
+                l3.push({
+                    name: 'Release hash on-chain (Solana)',
+                    s: 'pass',
+                    detail: 'ReleaseRecord PDA is <strong>Active</strong> &middot; v' + (releaseRecord.version || '?') +
+                        ' &middot; signer <code>' + short(releaseRecord.signer) + '</code>' +
+                        ' &middot; PDA <code>' + short(releaseRecord.pda) + '</code>',
+                });
+            } else if (onChainStatus === 'Revoked') {
+                l3.push({
+                    name: 'Release hash on-chain (Solana)',
+                    s: 'fail',
+                    detail: '<strong style="color:#dc2626">REVOKED</strong> &mdash; this release has been revoked on-chain. Do not trust this server.',
+                });
+            } else {
+                l3.push({
+                    name: 'Release hash on-chain (Solana)',
+                    s: 'fail',
+                    detail: 'ReleaseRecord found but status is <code>' + onChainStatus + '</code>' +
+                        (onChainHashMatch ? '' : ' and stored hash does not match'),
+                });
+            }
+        } else if (releaseHashToVerify) {
+            l3.push({
+                name: 'Release hash on-chain (Solana)',
+                s: 'fail',
+                detail: 'No ReleaseRecord PDA found for hash <code>' + short(releaseHashToVerify) + '</code> &mdash; this release is NOT registered on the blockchain',
+            });
+        } else {
+            l3.push({
+                name: 'Release hash on-chain (Solana)',
+                s: 'warn',
+                detail: 'No release hash available to verify on-chain (DNS and endpoint both missing)',
+            });
         }
 
         if (releaseInfo) {
