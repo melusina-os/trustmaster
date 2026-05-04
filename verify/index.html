@@ -127,46 +127,40 @@
         .check-detail { font-size: 0.82rem; color: var(--muted); margin-top: 6px; }
         .check-detail code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.78rem; }
 
-        /* §2.14 reduced-mode banner — amber palette mirrors the Sandstorm
-           shell topbar / login modal warning so the install state reads as
-           one visual language across the surfaces. */
+        /* §2.14 reduced-mode banner — KISS. Same amber palette as the
+           Sandstorm shell helix tint so the carve-out reads as one visual
+           language across the surfaces. */
         .reduced-mode-banner {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
             background: linear-gradient(135deg, #fffbeb, #fef3c7);
-            border: 2px solid #f5a623;
-            border-left-width: 6px;
-            border-radius: 12px;
-            padding: 18px 20px;
+            border: 1px solid #f5a623;
+            border-left-width: 5px;
+            border-radius: 10px;
+            padding: 14px 16px;
             color: #78350f;
-            font-size: 0.9rem;
-            line-height: 1.55;
+            font-size: 0.92rem;
+            line-height: 1.5;
         }
-        .reduced-mode-banner .reduced-mode-headline {
-            display: flex; align-items: center; gap: 10px;
-            margin-bottom: 10px;
+        .reduced-mode-banner .reduced-mode-icon {
+            font-size: 1.4rem; color: #d97706; flex-shrink: 0; line-height: 1;
         }
-        .reduced-mode-banner .reduced-mode-icon { font-size: 1.4rem; color: #d97706; }
-        .reduced-mode-banner .reduced-mode-title { font-weight: 700; font-size: 1rem; color: #92400e; }
-        .reduced-mode-banner p { margin: 0 0 8px; }
-        .reduced-mode-banner ul { margin: 8px 0 8px 20px; padding: 0; }
-        .reduced-mode-banner ul li { margin: 4px 0; }
-        .reduced-mode-banner code {
+        .reduced-mode-banner .reduced-mode-text {
+            flex: 1; min-width: 0;
+        }
+        .reduced-mode-banner .reduced-mode-text strong { color: #92400e; }
+        .reduced-mode-banner .reduced-mode-text code {
             background: rgba(146, 64, 14, 0.1);
             color: #92400e;
             padding: 1px 6px;
             border-radius: 4px;
             font-family: monospace; font-size: 0.85em;
+            word-break: break-word;
+            overflow-wrap: anywhere;
         }
-        .reduced-mode-banner em { color: #d97706; font-style: normal; font-weight: 600; }
-        .reduced-mode-banner .reduced-mode-foot {
-            font-size: 0.82rem;
-            color: #92400e;
-            margin-top: 10px;
-        }
-        .reduced-mode-banner .reduced-mode-stale {
-            font-size: 0.78rem;
-            color: #b45309;
-            margin-top: 8px;
-            font-style: italic;
+        .reduced-mode-banner .reduced-mode-text a {
+            color: #b45309; text-decoration: underline; font-size: 0.85em;
         }
         /* Header pill on L3 (Licensee) when reduced mode is on */
         .reduced-mode-pill {
@@ -362,46 +356,19 @@ dns_tls_fp:        da07c332...
             </div>
         </div>
 
-        <!-- §2.14 reduced-mode banner — shown only when LicenseEntry.dev_permissive=true.
-             Sits above the Layer cards so the operator reads the carve-out narrative
-             before scanning the per-layer checks. The banner explains that the chain
-             of trust is intact; the discrepancy is operational scope (spk dev / dev-
-             shell bypass cascade gate, admin reconcile retains admin on transient
-             errors). Hidden by default; populated in the verify path. -->
+        <!-- §2.14 reduced-mode banner — KISS one-liner. Operators wanting
+             the full carve-out scope read CLAUDE.md §2.14; the banner just
+             flags the bit. -->
         <div class="card" id="reducedModeCard" style="display:none;">
             <div class="reduced-mode-banner">
-                <div class="reduced-mode-headline">
-                    <span class="reduced-mode-icon">&#9888;</span>
-                    <span class="reduced-mode-title">Reduced security mode (CLAUDE.md &sect;2.14)</span>
-                </div>
-                <p>
-                    On-chain <code>LicenseEntry.dev_permissive = true</code> for this install.
-                    The chain of trust below is intact; the <em>discrepancy</em> is operational
-                    scope:
-                </p>
-                <ul>
-                    <li><strong>spk dev</strong> packages and <strong>sandstorm dev-shell</strong>
-                        launches bypass the cascade gate
-                        (<code>GlobalAppApproval &rarr; ResellerAppApproval &rarr; LocalAppApproval</code>)
-                        on this install only.</li>
-                    <li>The shell's admin reconcile retains <code>isAdmin</code> on a transient
-                        authz-daemon error instead of demoting (Inv 5 fail-closed relaxed for dev).</li>
-                    <li><strong>Production grain launches</strong> (regular spk packages,
-                        non-dev users) <em>still</em> run the full verify chain &mdash; the
-                        carve-out is scoped to <code>isDev</code> mounts and the live
-                        <code>/run/melusina/dev-permissive.flag</code> file.</li>
-                </ul>
-                <p class="reduced-mode-foot">
-                    Flip-to-false propagates within &le;5s of a Squads-signed
-                    <code>set_dev_permissive(false)</code> instruction. The mainnet program
-                    build refuses the call entirely &mdash; this state is only reachable on
-                    devnet.
-                </p>
-                <p class="reduced-mode-stale">
-                    This page is static; click <strong>Refresh</strong> at the top to re-read
-                    on-chain state after a Squads flip. The Sandstorm shell + deploy-ui
-                    surfaces poll automatically every 60s.
-                </p>
+                <span class="reduced-mode-icon">&#9888;</span>
+                <span class="reduced-mode-text">
+                    <strong>Reduced security mode</strong> &mdash;
+                    <code>spk dev</code> and <code>sandstorm dev-shell</code> bypass the
+                    cascade gate on this install. Devnet only.
+                    <a href="https://github.com/melusina-os/melusina-os-sandstorm/blob/main/CLAUDE.md#214"
+                       target="_blank" rel="noopener noreferrer">CLAUDE.md &sect;2.14</a>
+                </span>
             </div>
         </div>
 
